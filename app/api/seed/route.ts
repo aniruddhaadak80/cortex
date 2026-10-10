@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGraph } from "@/lib/falkordb";
+import { getKnowledgeGraph } from "@/lib/falkordb";
 import {
   teams,
   people,
@@ -22,7 +22,7 @@ import {
 
 export async function POST() {
   try {
-    const graph = await getGraph();
+    const graph = await getKnowledgeGraph();
 
     // Clear existing data
     await graph.query("MATCH (n) DETACH DELETE n");

@@ -1,117 +1,237 @@
+import { streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
 import { planResearch } from "./planner";
 import { executeResearch } from "./researcher";
-import { synthesizeAnswer } from "./synthesizer";
 import {
   recallMemories,
   storeEpisodicMemory,
   storeSemanticMemory,
   storeProceduralMemory,
+  extractKeywords,
 } from "./memory";
-import type { AgentResponse, AgentPlan, SubQuery } from "@/lib/types";
+import { extractSubgraphForAnswer, findPathBetween } from "./subgraph";
+import { listTenantGraphs } from "@/lib/falkordb";
+import type { AgentResponse, AgentPlan, SubQuery, MemoryEntry } from "@/lib/types";
 import { nanoid } from "nanoid";
 
-export async function runAgent(
+/** Events emitted while the pipeline runs — consumed as SSE by the UI. */
+export type AgentEvent =
+  | { type: "phase"; phase: AgentPhase; status: "start" | "done" | "error"; detail?: string }
+  | { type: "memories"; memories: MemoryEntry[] }
+  | { type: "plan"; decomposed: string; subQueries: { id: string; question: string; reasoning: string }[] }
+  | { type: "research_start"; subQueryId: string; question: string }
+  | { type: "research_update"; subQueryId: string; action: string }
+  | { type: "research_done"; subQuery: SubQuery }
+  | { type: "answer_chunk"; chunk: string }
+  | { type: "subgraph"; nodes: any[]; edges: any[]; truncated: boolean }
+  | { type: "tenants"; graphs: string[] }
+  | { type: "done"; response: AgentResponse }
+  | { type: "error"; message: string };
+
+export type AgentPhase =
+  | "memory"
+  | "plan"
+  | "research"
+  | "subgraph"
+  | "synthesize"
+  | "store";
+
+/**
+ * Streaming agent pipeline.
+ *
+ * Memory → Plan → Research (parallel) → Subgraph → Synthesize → Store.
+ * Every step yields an event so the UI can show live reasoning instead
+ * of a spinner.
+ */
+export async function* runAgentStream(
   question: string,
-  sessionId: string
-): Promise<AgentResponse> {
+  tenantId: string
+): AsyncGenerator<AgentEvent> {
   const startTime = Date.now();
 
-  // Step 1: Recall memories from past sessions (Track 2: Memory)
-  console.log(`[Agent] Recalling memories for session ${sessionId}...`);
-  const memories = await recallMemories(question, sessionId);
+  try {
+    // ── Phase 1: Memory recall (per-tenant FalkorDB graph) ──
+    yield { type: "phase", phase: "memory", status: "start" };
+    const memories = await recallMemories(question, tenantId);
+    yield { type: "phase", phase: "memory", status: "done", detail: `${memories.length} memories` };
+    yield { type: "memories", memories };
 
-  // Step 2: Plan the research (decompose into sub-queries)
-  console.log(`[Agent] Planning research for: "${question}"`);
-  const plan = await planResearch(question, memories);
+    // ── Phase 2: Plan ──
+    yield { type: "phase", phase: "plan", status: "start" };
+    const plan = await planResearch(question, memories);
+    const subQueries: SubQuery[] = plan.subQueries.map((sq) => ({
+      id: nanoid(),
+      question: sq.question,
+      reasoning: sq.reasoning,
+      status: "pending" as const,
+    }));
+    yield {
+      type: "plan",
+      decomposed: plan.decomposed,
+      subQueries: subQueries.map((sq) => ({
+        id: sq.id,
+        question: sq.question,
+        reasoning: sq.reasoning,
+      })),
+    };
+    yield { type: "phase", phase: "plan", status: "done", detail: `${subQueries.length} sub-queries` };
 
-  // Step 3: Execute research in parallel (Track 1: Acts on connected data)
-  const subQueries: SubQuery[] = plan.subQueries.map((sq, i) => ({
-    id: nanoid(),
-    question: sq.question,
-    reasoning: sq.reasoning,
-    status: "pending" as const,
-  }));
+    // ── Phase 3: Research in parallel ──
+    yield { type: "phase", phase: "research", status: "start", detail: `${subQueries.length} researchers` };
 
-  console.log(`[Agent] Executing ${subQueries.length} research tasks in parallel...`);
-  const results = await Promise.all(
-    subQueries.map(async (sq) => {
-      const result = await executeResearch(sq);
-      console.log(
-        `[Agent] Research ${result.status}: ${result.question.substring(0, 60)}`
-      );
-      return result;
-    })
-  );
+    const pending = subQueries.map(async (sq): Promise<{ sq: SubQuery; events: AgentEvent[] }> => {
+      const events: AgentEvent[] = [
+        { type: "research_start", subQueryId: sq.id, question: sq.question },
+      ];
+      const result = await executeResearch(sq, (e) => {
+        events.push({
+          type: "research_update",
+          subQueryId: sq.id,
+          action: e.type === "algorithm" ? `algorithm:${e.algorithm}` : e.type,
+        });
+      });
+      events.push({ type: "research_done", subQuery: result });
+      return { sq: result, events };
+    });
 
-  const fullPlan: AgentPlan = {
-    originalQuestion: question,
-    decomposed: plan.decomposed,
-    subQueries: results,
-    memoryContext: memories,
-  };
+    // Emit researcher events as they arrive (not in submission order)
+    const results: SubQuery[] = [];
+    const batches = await Promise.all(pending);
+    for (const batch of batches) {
+      for (const ev of batch.events) yield ev;
+      results.push(batch.sq);
+    }
 
-  // Step 4: Synthesize the final answer (Track 3: Company Brain)
-  console.log(`[Agent] Synthesizing answer...`);
-  const answer = await synthesizeAnswer(question, results, memories);
+    yield { type: "phase", phase: "research", status: "done", detail: `${results.filter((r) => r.status === "done").length}/${results.length} succeeded` };
 
-  // Step 5: Store memories for future sessions (Track 2: Memory persists)
-  await storeEpisodicMemory(sessionId, question, answer);
+    const fullPlan: AgentPlan = {
+      originalQuestion: question,
+      decomposed: plan.decomposed,
+      subQueries: results,
+      memoryContext: memories,
+    };
 
-  // Extract and store semantic facts from the answer
-  const facts = extractFacts(answer, results);
-  for (const fact of facts.slice(0, 3)) {
-    await storeSemanticMemory(sessionId, fact);
+    // ── Phase 4: Subgraph extraction (the "path behind the answer") ──
+    yield { type: "phase", phase: "subgraph", status: "start" };
+    const allRows: Record<string, any>[] = [];
+    for (const r of results) {
+      if (r.status === "done" && r.results) allRows.push(...r.results.slice(0, 10));
+    }
+    let subgraph = { nodes: [] as any[], edges: [] as any[], truncated: false };
+    try {
+      subgraph = await extractSubgraphForAnswer(allRows);
+    } catch {
+      /* non-fatal */
+    }
+    yield { type: "subgraph", ...subgraph };
+    yield { type: "phase", phase: "subgraph", status: "done", detail: `${subgraph.nodes.length} nodes in answer path` };
+
+    // ── Phase 5: Synthesize (streamed) ──
+    yield { type: "phase", phase: "synthesize", status: "start" };
+    let answer = "";
+    const synthStream = streamAnswer(question, results, memories);
+    for await (const chunk of synthStream) {
+      answer += chunk;
+      yield { type: "answer_chunk", chunk };
+    }
+    yield { type: "phase", phase: "synthesize", status: "done" };
+
+    // ── Phase 6: Store memories + show multigraph isolation ──
+    yield { type: "phase", phase: "store", status: "start" };
+    await storeEpisodicMemory(tenantId, question, answer);
+    for (const fact of extractFacts(answer, results).slice(0, 3)) {
+      await storeSemanticMemory(tenantId, fact);
+    }
+    for (const pattern of results
+      .filter((r) => r.status === "done" && r.cypherQuery)
+      .slice(0, 2)
+      .map((r) => `${r.question} => ${r.cypherQuery}`)) {
+      await storeProceduralMemory(tenantId, pattern);
+    }
+    yield { type: "phase", phase: "store", status: "done" };
+
+    const graphs = await listTenantGraphs();
+    yield { type: "tenants", graphs };
+
+    const response: AgentResponse = {
+      answer,
+      plan: fullPlan,
+      cypherQueries: results.filter((r) => r.cypherQuery).map((r) => r.cypherQuery!),
+      graphPaths: [],
+      processingTimeMs: Date.now() - startTime,
+    };
+    yield { type: "done", response };
+  } catch (err: any) {
+    yield { type: "error", message: err.message || "Agent pipeline failed" };
   }
+}
 
-  // Store procedural memory (successful query patterns)
-  const successfulQueries = results
-    .filter((r) => r.status === "done" && r.cypherQuery)
-    .map((r) => `${r.question} => ${r.cypherQuery}`);
-  for (const pattern of successfulQueries.slice(0, 2)) {
-    await storeProceduralMemory(sessionId, pattern);
-  }
+/** Streaming synthesizer — chunks come out as the LLM writes. */
+async function* streamAnswer(
+  question: string,
+  results: SubQuery[],
+  memories: MemoryEntry[]
+): AsyncGenerator<string> {
+  const evidenceBlocks = results
+    .filter((sq) => sq.status === "done")
+    .map(
+      (sq) => `### Research: ${sq.question}
+**Reasoning:** ${sq.reasoning}
+**Cypher:** \`${sq.cypherQuery || "n/a"}\`
+**Evidence:** ${sq.evidence}`
+    )
+    .join("\n\n");
 
-  const processingTimeMs = Date.now() - startTime;
-  console.log(`[Agent] Done in ${processingTimeMs}ms`);
+  const memoryContext = memories.map((m) => `[${m.type}] ${m.content}`).join("\n");
+  const failed = results.filter((r) => r.status === "failed");
 
-  return {
-    answer,
-    plan: fullPlan,
-    cypherQueries: results
-      .filter((r) => r.cypherQuery)
-      .map((r) => r.cypherQuery!),
-    graphPaths: extractGraphPaths(results),
-    processingTimeMs,
-  };
+  const { textStream } = streamText({
+    model: openai(process.env.OPENAI_MODEL || "gpt-4o"),
+    prompt: `You are the Synthesizer agent. Combine all research evidence into a clear, comprehensive answer.
+
+## Original Question
+"${question}"
+
+## Memory Context
+${memoryContext || "No prior memories."}
+
+## Research Evidence
+${evidenceBlocks || "No evidence gathered."}
+
+${failed.length ? `## Failed Research\n${failed.map((f) => `- ${f.question}: ${f.error}`).join("\n")}` : ""}
+
+## Instructions
+1. Answer directly and comprehensively
+2. Reference specific people, projects, documents, decisions by name
+3. Show the connections that led to the answer
+4. Acknowledge evidence gaps honestly
+5. Markdown with headers, bullets, **bold** for key terms
+6. End with a "Reasoning Path" section showing how you got there
+7. 200-400 words`,
+    temperature: 0.4,
+  });
+
+  yield* textStream;
 }
 
 function extractFacts(answer: string, results: SubQuery[]): string[] {
-  const facts: string[] = [];
-  for (const r of results) {
-    if (r.status === "done" && r.results && r.results.length > 0) {
-      facts.push(`${r.question} — ${r.evidence?.substring(0, 200)}`);
-    }
-  }
-  return facts;
+  return results
+    .filter((r) => r.status === "done" && r.results && r.results.length > 0)
+    .map((r) => `${r.question} — ${(r.evidence || "").substring(0, 200)}`);
 }
 
-function extractGraphPaths(results: SubQuery[]): any[] {
-  const paths: any[] = [];
-  for (const r of results) {
-    if (r.status === "done" && r.results && r.results.length > 0) {
-      for (const row of r.results.slice(0, 3)) {
-        const pathNodes: any[] = [];
-        const pathEdges: any[] = [];
-        for (const [key, value] of Object.entries(row)) {
-          if (typeof value === "object" && value !== null) {
-            pathNodes.push({ id: key, label: JSON.stringify(value).substring(0, 50), type: key });
-          }
-        }
-        if (pathNodes.length > 0) {
-          paths.push({ nodes: pathNodes, edges: pathEdges });
-        }
-      }
-    }
+/** Non-streaming wrapper for the MCP server and tests. */
+export async function runAgent(
+  question: string,
+  tenantId: string
+): Promise<AgentResponse> {
+  let response: AgentResponse | null = null;
+  for await (const event of runAgentStream(question, tenantId)) {
+    if (event.type === "done") response = event.response;
   }
-  return paths;
+  if (!response) throw new Error("Agent produced no response");
+  return response;
 }
+
+/** Convenience: "the path between X and Y" as a first-class call. */
+export { findPathBetween };

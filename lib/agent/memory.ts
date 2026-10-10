@@ -1,37 +1,33 @@
 import { nanoid } from "nanoid";
-import { getGraph } from "@/lib/falkordb";
+import { runTenantCypher } from "@/lib/falkordb";
 import type { MemoryEntry } from "@/lib/types";
 
+/**
+ * Memory lives in a PER-TENANT FalkorDB graph (`memory_{tenantId}`).
+ * Track 2 criterion: "separate memory per user or tenant" — enabled by
+ * FalkorDB multigraph topology, no extra database deployment required.
+ */
 export async function recallMemories(
   question: string,
-  sessionId: string
+  tenantId: string
 ): Promise<MemoryEntry[]> {
   try {
-    const graph = await getGraph();
-    // Extract keywords from the question for matching
     const keywords = extractKeywords(question);
 
     if (keywords.length === 0) {
-      // No useful keywords — return recent memories
-      const fallbackQuery = `
-        MATCH (m:Memory)
-        WHERE m.session_id = $sessionId
-        RETURN m.type AS type, m.content AS content, m.relevance AS relevance, m.timestamp AS timestamp
-        ORDER BY m.timestamp DESC
-        LIMIT 3
-      `;
-      const fallback = await graph.query(fallbackQuery, { params: { sessionId } });
-      return (fallback.data || []).map((row: any) => ({
-        type: row.type || "semantic",
-        content: row.content || "",
-        relevance: parseFloat(row.relevance) || 0.5,
-        sessionId,
-        timestamp: row.timestamp || new Date().toISOString(),
-      }));
+      const rows = await runTenantCypher(
+        tenantId,
+        `MATCH (m:Memory)
+         RETURN m.type AS type, m.content AS content, m.relevance AS relevance, m.timestamp AS timestamp
+         ORDER BY m.timestamp DESC
+         LIMIT 3`
+      );
+      return toEntries(rows, tenantId);
     }
 
-    // Build OR clause: content CONTAINS keyword for each keyword
-    const conditions = keywords.map((_, i) => `toLower(m.content) contains $kw${i}`).join("\n        OR ");
+    const conditions = keywords
+      .map((_, i) => `toLower(m.content) contains $kw${i}`)
+      .join("\n        OR ");
     const keywordParams: Record<string, string> = {};
     keywords.forEach((kw, i) => {
       keywordParams[`kw${i}`] = kw.toLowerCase();
@@ -39,115 +35,118 @@ export async function recallMemories(
 
     const query = `
       MATCH (m:Memory)
-      WHERE m.session_id = $sessionId
-        AND (${conditions})
+      WHERE (${conditions})
       RETURN m.type AS type, m.content AS content, m.relevance AS relevance, m.timestamp AS timestamp
       ORDER BY m.relevance DESC, m.timestamp DESC
       LIMIT 5
     `;
 
-    const result = await graph.query(query, {
-      params: { sessionId, ...keywordParams },
-    });
+    const rows = await runTenantCypher(tenantId, query, keywordParams);
+    if (rows.length > 0) return toEntries(rows, tenantId);
 
-    if (!result.data || result.data.length === 0) {
-      // Fallback: return recent memories from this session
-      const fallbackQuery = `
-        MATCH (m:Memory)
-        WHERE m.session_id = $sessionId
-        RETURN m.type AS type, m.content AS content, m.relevance AS relevance, m.timestamp AS timestamp
-        ORDER BY m.timestamp DESC
-        LIMIT 3
-      `;
-      const fallback = await graph.query(fallbackQuery, { params: { sessionId } });
-      return (fallback.data || []).map((row: any) => ({
-        type: row.type || "semantic",
-        content: row.content || "",
-        relevance: parseFloat(row.relevance) || 0.5,
-        sessionId,
-        timestamp: row.timestamp || new Date().toISOString(),
-      }));
-    }
-
-    return (result.data || []).map((row: any) => ({
-      type: row.type || "semantic",
-      content: row.content || "",
-      relevance: parseFloat(row.relevance) || 0.5,
-      sessionId,
-      timestamp: row.timestamp || new Date().toISOString(),
-    }));
+    // Fallback: most recent memories for this tenant
+    const fallback = await runTenantCypher(
+      tenantId,
+      `MATCH (m:Memory)
+       RETURN m.type AS type, m.content AS content, m.relevance AS relevance, m.timestamp AS timestamp
+       ORDER BY m.timestamp DESC
+       LIMIT 3`
+    );
+    return toEntries(fallback, tenantId);
   } catch (err) {
     console.error("[Memory] Recall failed:", err);
     return [];
   }
 }
 
+function toEntries(rows: Record<string, any>[], tenantId: string): MemoryEntry[] {
+  return rows.map((row) => ({
+    type: (row.type as MemoryEntry["type"]) || "semantic",
+    content: row.content || "",
+    relevance: parseFloat(row.relevance) || 0.5,
+    sessionId: tenantId,
+    timestamp: row.timestamp || new Date().toISOString(),
+  }));
+}
+
 export async function storeEpisodicMemory(
-  sessionId: string,
+  tenantId: string,
   question: string,
   answer: string
 ): Promise<void> {
-  try {
-    const graph = await getGraph();
-    const memoryId = nanoid();
-    const timestamp = new Date().toISOString();
-    const content = `Q: ${question}\nA: ${answer.substring(0, 500)}`;
-
-    await graph.query(
-      `CREATE (m:Memory {
-        id: $id, type: 'episodic', content: $content,
-        session_id: $sessionId, relevance: 0.9, timestamp: $timestamp
-      })`,
-      { params: { id: memoryId, content, sessionId, timestamp } }
-    );
-  } catch (err) {
-    console.error("[Memory] Store episodic failed:", err);
-  }
+  await safeStore(
+    tenantId,
+    "episodic",
+    `Q: ${question}\nA: ${answer.substring(0, 500)}`,
+    0.9
+  );
 }
 
 export async function storeSemanticMemory(
-  sessionId: string,
+  tenantId: string,
   fact: string
 ): Promise<void> {
-  try {
-    const graph = await getGraph();
-    const memoryId = nanoid();
-    const timestamp = new Date().toISOString();
-
-    await graph.query(
-      `CREATE (m:Memory {
-        id: $id, type: 'semantic', content: $content,
-        session_id: $sessionId, relevance: 0.8, timestamp: $timestamp
-      })`,
-      { params: { id: memoryId, content: fact, sessionId, timestamp } }
-    );
-  } catch (err) {
-    console.error("[Memory] Store semantic failed:", err);
-  }
+  await safeStore(tenantId, "semantic", fact, 0.8);
 }
 
 export async function storeProceduralMemory(
-  sessionId: string,
+  tenantId: string,
   pattern: string
 ): Promise<void> {
-  try {
-    const graph = await getGraph();
-    const memoryId = nanoid();
-    const timestamp = new Date().toISOString();
+  await safeStore(tenantId, "procedural", pattern, 0.7);
+}
 
-    await graph.query(
+async function safeStore(
+  tenantId: string,
+  type: MemoryEntry["type"],
+  content: string,
+  relevance: number
+): Promise<void> {
+  try {
+    await runTenantCypher(
+      tenantId,
       `CREATE (m:Memory {
-        id: $id, type: 'procedural', content: $content,
-        session_id: $sessionId, relevance: 0.7, timestamp: $timestamp
+        id: $id, type: $type, content: $content,
+        relevance: $relevance, timestamp: $timestamp
       })`,
-      { params: { id: memoryId, content: pattern, sessionId, timestamp } }
+      {
+        id: nanoid(),
+        type,
+        content,
+        relevance,
+        timestamp: new Date().toISOString(),
+      }
     );
   } catch (err) {
-    console.error("[Memory] Store procedural failed:", err);
+    console.error(`[Memory] Store ${type} failed:`, err);
   }
 }
 
-function extractKeywords(question: string): string[] {
+/** Inspect what a tenant has remembered — useful for the debug panel. */
+export async function memoryStats(
+  tenantId: string
+): Promise<{ type: string; count: number }[]> {
+  try {
+    const rows = await runTenantCypher(
+      tenantId,
+      `MATCH (m:Memory) RETURN m.type AS type, count(m) AS count`
+    );
+    return rows.map((r) => ({ type: r.type, count: Number(r.count) }));
+  } catch {
+    return [];
+  }
+}
+
+/** Forget everything for a tenant — for GDPR/demo resets. */
+export async function forgetTenant(tenantId: string): Promise<void> {
+  try {
+    await runTenantCypher(tenantId, `MATCH (m:Memory) DETACH DELETE m`);
+  } catch (err) {
+    console.error("[Memory] Forget failed:", err);
+  }
+}
+
+export function extractKeywords(question: string): string[] {
   const stopWords = new Set([
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
@@ -162,9 +161,9 @@ function extractKeywords(question: string): string[] {
     "show", "find", "get", "give", "know", "see", "think", "take", "use",
     "want", "look", "come", "ask", "work", "seem", "feel", "try",
     "leave", "call", "good", "new", "first", "last", "long", "great",
-    "little", "other", "old", "right", "big", "high", "different", "small",
-    "large", "next", "early", "young", "important", "few", "public",
-    "bad", "same", "able",
+    "little", "other", "old", "right", "big", "high", "different",
+    "small", "large", "next", "early", "young", "important", "public",
+    "bad", "able", "does",
   ]);
 
   return question

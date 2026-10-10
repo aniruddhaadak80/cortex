@@ -10,72 +10,42 @@ import type { AgentResponse } from "@/lib/types";
 export default function Home() {
   const [sessionId] = useState(() => `session-${Date.now()}`);
   const [response, setResponse] = useState<AgentResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [graphKey, setGraphKey] = useState(0);
+  const [highlight, setHighlight] = useState<{ nodes: any[]; edges: any[] }>({
+    nodes: [],
+    edges: [],
+  });
+  const [busy, setBusy] = useState(false);
 
-  const handleSendMessage = useCallback(
-    async (message: string) => {
-      setIsLoading(true);
-      setError(null);
-      setResponse(null);
+  const handleSubgraph = useCallback((nodes: any[], edges: any[]) => {
+    setHighlight({ nodes, edges });
+  }, []);
 
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, sessionId }),
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || "Failed to get response");
-        }
-
-        setResponse(data);
-        setGraphKey((k) => k + 1);
-      } catch (err: any) {
-        setError(err.message);
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [sessionId]
-  );
+  const handleResponse = useCallback((r: AgentResponse) => {
+    setResponse(r);
+    setGraphKey((k) => k + 1);
+  }, []);
 
   const handleSeed = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
+    setBusy(true);
     try {
-      const res = await fetch("/api/seed", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      await fetch("/api/seed", { method: "POST" });
       setGraphKey((k) => k + 1);
-    } catch (err: any) {
-      setError(err.message);
     } finally {
-      setIsLoading(false);
+      setBusy(false);
     }
   }, []);
 
   return (
     <div className="flex h-screen flex-col">
-      <Header onSeed={handleSeed} isSeeding={isLoading} />
+      <Header onSeed={handleSeed} isSeeding={busy} />
       <div className="flex flex-1 overflow-hidden">
-        {/* Left: Chat */}
         <div className="flex w-[42%] flex-col border-r border-border">
-          <Chat
-            onSend={handleSendMessage}
-            isLoading={isLoading}
-            error={error}
-            response={response}
-          />
+          <Chat onSubgraph={handleSubgraph} onResponse={handleResponse} />
         </div>
-        {/* Right: Graph + Reasoning */}
         <div className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-hidden">
-            <GraphView graphKey={graphKey} />
+            <GraphView graphKey={graphKey} highlight={highlight} />
           </div>
           <div className="h-[40%] overflow-y-auto border-t border-border">
             {response ? (

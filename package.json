@@ -9,10 +9,13 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "mcp": "bun run mcp/server.ts",
     "seed": "bun run scripts/seed.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "ai": "^4.1.0",
     "clsx": "^2.1.1",
     "falkordb": "^6.2.2",

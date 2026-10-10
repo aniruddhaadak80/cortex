@@ -53,6 +53,8 @@ export interface SubQuery {
   question: string;
   reasoning: string;
   cypherQuery?: string;
+  /** Which graph algorithm (if any) the researcher chose as its tool. */
+  algorithm?: string;
   results?: any[];
   status: "pending" | "running" | "done" | "failed";
   error?: string;

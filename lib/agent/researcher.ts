@@ -3,25 +3,60 @@ import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { runCypher } from "@/lib/falkordb";
 import { GRAPH_SCHEMA, EXAMPLE_QUERIES } from "@/lib/cypher";
+import { runAlgorithm, describeAlgorithmsForPrompt } from "./algorithms";
+import type { AlgorithmName } from "./algorithms";
 import type { SubQuery } from "@/lib/types";
 
 const researchSchema = z.object({
-  cypherQuery: z.string().describe("The Cypher query to execute"),
-  reasoning: z.string().describe("Why this query answers the sub-question"),
+  useAlgorithm: z
+    .boolean()
+    .describe(
+      "Set true if a graph algorithm answers this better than raw Cypher."
+    ),
+  algorithm: z
+    .string()
+    .optional()
+    .describe(
+      "Algorithm name if useAlgorithm is true: shortest_path | impact_analysis | page_rank | degree_centrality | community_detection | bottleneck_finder"
+    ),
+  algorithmParams: z
+    .record(z.string(), z.union([z.string(), z.number()]))
+    .optional()
+    .describe("Parameters for the algorithm, e.g. {from, to} or {label, limit}"),
+  cypherQuery: z
+    .string()
+    .describe("Cypher query to execute when useAlgorithm is false"),
+  reasoning: z.string().describe("Why this answers the sub-question"),
 });
 
+const ALGORITHMS = new Set([
+  "shortest_path",
+  "impact_analysis",
+  "page_rank",
+  "degree_centrality",
+  "community_detection",
+  "bottleneck_finder",
+]);
+
 export async function executeResearch(
-  subQuery: SubQuery
+  subQuery: SubQuery,
+  onEvent?: (event: ResearcherEvent) => void
 ): Promise<SubQuery> {
   try {
-    // Step 1: Generate Cypher query from the sub-question
+    onEvent?.({ type: "generating", subQueryId: subQuery.id });
+
     const { object: research } = await generateObject({
       model: openai(process.env.OPENAI_MODEL || "gpt-4o"),
       schema: researchSchema,
-      prompt: `You are the Researcher agent. Generate a FalkorDB Cypher query to answer this sub-question.
+      prompt: `You are the Researcher agent. Decide how to answer this sub-question using a FalkorDB knowledge graph.
 
 ## Graph Schema
 ${GRAPH_SCHEMA}
+
+## Graph Algorithms available as tools
+${describeAlgorithmsForPrompt()}
+
+Prefer a graph algorithm when the question is about connectivity, importance, clustering, or blast radius. Use raw Cypher otherwise.
 
 ## Example Queries
 ${EXAMPLE_QUERIES}
@@ -32,53 +67,86 @@ ${EXAMPLE_QUERIES}
 ## Reasoning for this sub-query
 "${subQuery.reasoning}"
 
-Generate a single, correct Cypher query. Return ONLY the query and brief reasoning. The query must be valid FalkorDB Cypher syntax.`,
+Return the tool choice, its parameters, and brief reasoning.`,
       temperature: 0.1,
     });
 
-    // Step 2: Execute the query against FalkorDB
-    let results: any[] = [];
+    // Dispatch: algorithm tool or raw Cypher
+    let rows: Record<string, any>[] = [];
     let error: string | undefined;
+    let cypherQuery: string | undefined;
 
-    try {
-      results = await runCypher(research.cypherQuery);
-    } catch (err: any) {
-      error = err.message;
-      // Try to fix the query with a retry
+    if (
+      research.useAlgorithm &&
+      research.algorithm &&
+      ALGORITHMS.has(research.algorithm)
+    ) {
+      onEvent?.({
+        type: "algorithm",
+        subQueryId: subQuery.id,
+        algorithm: research.algorithm,
+      });
       try {
-        const { object: fixAttempt } = await generateObject({
-          model: openai(process.env.OPENAI_MODEL || "gpt-4o"),
-          schema: researchSchema,
-          prompt: `The following Cypher query failed with error: ${error}
+        const result = await runAlgorithm(
+          research.algorithm as AlgorithmName,
+          research.algorithmParams || {}
+        );
+        rows = result.rows;
+        cypherQuery = result.query;
+      } catch (err: any) {
+        error = err.message;
+      }
+    } else {
+      onEvent?.({
+        type: "querying",
+        subQueryId: subQuery.id,
+        cypher: research.cypherQuery,
+      });
+      try {
+        rows = await runCypher(research.cypherQuery);
+        cypherQuery = research.cypherQuery;
+      } catch (err: any) {
+        error = err.message;
+        // Auto-repair pass
+        try {
+          const { object: fix } = await generateObject({
+            model: openai(process.env.OPENAI_MODEL || "gpt-4o"),
+            schema: researchSchema,
+            prompt: `The following Cypher failed with: ${error}
 
-Failed query:
+Query:
 ${research.cypherQuery}
 
 Sub-question: "${subQuery.question}"
 
-Graph Schema:
+Schema:
 ${GRAPH_SCHEMA}
 
-Example Queries:
+Examples:
 ${EXAMPLE_QUERIES}
 
-Generate a corrected Cypher query that works with FalkorDB. Be conservative - use simple MATCH patterns.`,
-          temperature: 0.1,
-        });
-        results = await runCypher(fixAttempt.cypherQuery);
-        error = undefined;
-      } catch (retryErr: any) {
-        error = retryErr.message;
+Generate a corrected, conservative query (simple MATCH patterns only).`,
+            temperature: 0.1,
+          });
+          rows = await runCypher(fix.cypherQuery);
+          cypherQuery = fix.cypherQuery;
+          error = undefined;
+        } catch (retryErr: any) {
+          error = retryErr.message;
+        }
       }
     }
 
-    // Step 3: Format results as evidence
-    const evidence = formatEvidence(results, error);
+    const evidence = formatEvidence(rows, error);
 
     return {
       ...subQuery,
-      cypherQuery: research.cypherQuery,
-      results: results.slice(0, 20),
+      cypherQuery,
+      algorithm:
+        research.useAlgorithm && research.algorithm
+          ? research.algorithm
+          : undefined,
+      results: rows.slice(0, 20),
       status: error ? "failed" : "done",
       error,
       evidence,
@@ -92,6 +160,11 @@ Generate a corrected Cypher query that works with FalkorDB. Be conservative - us
     };
   }
 }
+
+export type ResearcherEvent =
+  | { type: "generating"; subQueryId: string }
+  | { type: "algorithm"; subQueryId: string; algorithm: string }
+  | { type: "querying"; subQueryId: string; cypher: string };
 
 function formatEvidence(results: any[], error?: string): string {
   if (error) return `Query failed: ${error}`;

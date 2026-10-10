@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { getGraph } from "@/lib/falkordb";
+import { runCypher } from "@/lib/falkordb";
 
 export async function GET() {
   try {
-    const graph = await getGraph();
-
     // Get all nodes with their labels and key properties
-    const nodesResult = await graph.query(`
+    const nodesResult = await runCypher(`
       MATCH (n)
       RETURN id(n) AS nodeId, labels(n)[0] AS label,
              coalesce(n.name, n.title, n.id) AS name,
@@ -15,13 +13,13 @@ export async function GET() {
     `);
 
     // Get all relationships
-    const edgesResult = await graph.query(`
+    const edgesResult = await runCypher(`
       MATCH (a)-[r]->(b)
       RETURN id(a) AS source, id(b) AS target, type(r) AS type
       LIMIT 200
     `);
 
-    const nodes = (nodesResult.data || []).map((row: any) => ({
+    const nodes = nodesResult.map((row) => ({
       id: String(row.nodeId),
       label: row.name || row.nodeId,
       type: row.label,
@@ -29,7 +27,7 @@ export async function GET() {
       nodeType: row.type,
     }));
 
-    const edges = (edgesResult.data || []).map((row: any) => ({
+    const edges = edgesResult.map((row) => ({
       source: String(row.source),
       target: String(row.target),
       type: row.type,

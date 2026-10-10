@@ -20,6 +20,7 @@ interface GraphEdge {
 
 interface GraphViewProps {
   graphKey: number;
+  highlight?: { nodes: any[]; edges: any[] };
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -33,7 +34,7 @@ const TYPE_COLORS: Record<string, string> = {
   Memory: "#84cc16",
 };
 
-export function GraphView({ graphKey }: GraphViewProps) {
+export function GraphView({ graphKey, highlight }: GraphViewProps) {
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({
     nodes: [],
     edges: [],
@@ -41,6 +42,11 @@ export function GraphView({ graphKey }: GraphViewProps) {
   const [loading, setLoading] = useState(true);
   const [hoveredNode, setHoveredNode] = useState<GraphNode | null>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+
+  // Labels of nodes on the answer path — used to glow them
+  const highlightLabels = new Set(
+    (highlight?.nodes || []).map((n) => String(n.label || "").toLowerCase())
+  );
 
   const fetchGraph = useCallback(async () => {
     try {
@@ -90,6 +96,8 @@ export function GraphView({ graphKey }: GraphViewProps) {
   const renderGraph = useCallback(() => {
     if (graphData.nodes.length === 0) return null;
 
+    const isHighlighted = (n: any) => highlightLabels.has(String(n.label || "").toLowerCase());
+
     return (
       <ForceGraph2D
         graphData={{
@@ -97,10 +105,28 @@ export function GraphView({ graphKey }: GraphViewProps) {
           links: graphData.edges.map((e) => ({ ...e })),
         }}
         nodeLabel={(n: any) => `${n.type}: ${n.label}${n.status ? ` (${n.status})` : ""}`}
-        nodeColor={(n: any) => TYPE_COLORS[n.type] || "#888"}
-        nodeVal={(n: any) => (n.type === "Person" ? 8 : 6)}
-        linkColor={() => "rgba(255,255,255,0.15)"}
-        linkWidth={1}
+        nodeColor={(n: any) => {
+          if (isHighlighted(n)) return "#facc15"; // gold for answer-path nodes
+          return TYPE_COLORS[n.type] || "#888";
+        }}
+        nodeVal={(n: any) => (isHighlighted(n) ? 14 : n.type === "Person" ? 8 : 6)}
+        linkColor={(l: any) => {
+          const src = l.source as any;
+          const tgt = l.target as any;
+          const srcLabel = String(src?.label || src?.id || "").toLowerCase();
+          const tgtLabel = String(tgt?.label || tgt?.id || "").toLowerCase();
+          if (highlightLabels.has(srcLabel) && highlightLabels.has(tgtLabel)) {
+            return "rgba(250,204,21,0.7)";
+          }
+          return "rgba(255,255,255,0.12)";
+        }}
+        linkWidth={(l: any) => {
+          const src = l.source as any;
+          const tgt = l.target as any;
+          const srcLabel = String(src?.label || src?.id || "").toLowerCase();
+          const tgtLabel = String(tgt?.label || tgt?.id || "").toLowerCase();
+          return highlightLabels.has(srcLabel) && highlightLabels.has(tgtLabel) ? 2.5 : 1;
+        }}
         linkDirectionalParticles={2}
         linkDirectionalParticleSpeed={0.005}
         onNodeHover={(n: any) => setHoveredNode(n || null)}
@@ -108,7 +134,7 @@ export function GraphView({ graphKey }: GraphViewProps) {
         height={dimensions.height}
       />
     );
-  }, [graphData]);
+  }, [graphData, highlightLabels]);
 
   return (
     <div className="relative h-full w-full">
@@ -132,6 +158,12 @@ export function GraphView({ graphKey }: GraphViewProps) {
           <span className="mx-1.5">|</span>
           <span className="font-semibold text-text">{graphData.edges.length}</span> edges
         </p>
+        {highlightLabels.size > 0 && (
+          <p className="mt-1 flex items-center gap-1.5 text-xs text-warning">
+            <span className="h-2 w-2 rounded-full bg-warning" />
+            {highlightLabels.size} on answer path
+          </p>
+        )}
       </div>
 
       {/* Hovered node info */}

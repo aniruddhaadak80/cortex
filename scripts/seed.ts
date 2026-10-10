@@ -1,4 +1,4 @@
-import { getGraph } from "../lib/falkordb";
+import { getKnowledgeGraph } from "../lib/falkordb";
 import {
   teams,
   people,
@@ -20,7 +20,7 @@ import {
 } from "../lib/seed-data";
 
 async function seed() {
-  const graph = await getGraph();
+  const graph = await getKnowledgeGraph();
   console.log("Clearing existing data...");
   await graph.query("MATCH (n) DETACH DELETE n");
 

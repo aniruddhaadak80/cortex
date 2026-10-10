@@ -25,69 +25,88 @@ Cortex answers questions about your organization by **reasoning over a knowledge
 
 ## Architecture
 
-### Multi-Agent Pipeline
+### Multi-Agent Pipeline (Streaming)
+
+Every step yields an SSE event so the UI shows live reasoning — no spinners.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        USER QUESTION                                │
-│                  "What breaks if auth goes down?"                   │
 └───────────────────────────────┬─────────────────────────────────────┘
-                                │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  AGENT 1: MEMORY AGENT                                               │
-│                                                                     │
-│  • Recalls past conversations from FalkorDB (episodic memory)       │
-│  • Finds relevant facts (semantic memory)                           │
-│  • Loads known query patterns (procedural memory)                   │
-│                                                                     │
-│  Cypher:  MATCH (m:Memory) WHERE m.session_id = $sid               │
-│           AND (toLower(m.content) contains $kw0 OR ...)             │
-│           RETURN m.type, m.content, m.relevance                     │
+│  PHASE 1: MEMORY — per-tenant FalkorDB graph (`memory_{tenantId}`)  │
+│  Recalls episodic / semantic / procedural memory from past sessions │
 └───────────────────────────────┬─────────────────────────────────────┘
-                                │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  AGENT 2: PLANNER AGENT                                              │
-│                                                                     │
-│  Decomposes the question into focused sub-queries:                  │
-│                                                                     │
-│  Sub-query A: "What systems directly depend on auth-service?"       │
-│  Sub-query B: "What services transitively depend on those?"         │
-│  Sub-query C: "Who is responsible for each affected service?"       │
+│  PHASE 2: PLAN — decomposes the question into sub-queries           │
 └───────────────────────────────┬─────────────────────────────────────┘
-                                │
+                                ▼
                     ┌───────────┼───────────┐
                     ▼           ▼           ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  AGENT 3: RESEARCHER AGENTS (Parallel)                              │
-│                                                                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
-│  │ Researcher A │  │ Researcher B │  │ Researcher C │              │
-│  │              │  │              │  │              │              │
-│  │ LLM generates│  │ LLM generates│  │ LLM generates│              │
-│  │ Cypher query │  │ Cypher query │  │ Cypher query │              │
-│  │      │       │  │      │       │  │      │       │              │
-│  │      ▼       │  │      ▼       │  │      ▼       │              │
-│  │ Executes on  │  │ Executes on  │  │ Executes on  │              │
-│  │ FalkorDB     │  │ FalkorDB     │  │ FalkorDB     │              │
-│  │      │       │  │      │       │  │      │       │              │
-│  │      ▼       │  │      ▼       │  │      ▼       │              │
-│  │ Returns      │  │ Returns      │  │ Returns      │              │
-│  │ evidence     │  │ evidence     │  │ evidence     │              │
-│  └──────────────┘  └──────────────┘  └──────────────┘              │
+│  PHASE 3: RESEARCH — agents run IN PARALLEL                        │
+│  Each agent picks a TOOL:                                           │
+│    • Raw Cypher against the shared `company` knowledge graph        │
+│    • A graph algorithm (see below)                                  │
+│  Auto-repairs failed queries with one LLM retry                    │
 └───────────────────────────────┬─────────────────────────────────────┘
-                                │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  AGENT 4: SYNTHESIZER AGENT                                          │
-│                                                                     │
-│  • Combines all evidence into one coherent answer                   │
-│  • Shows the reasoning path (graph traversals used)                │
-│  • Cites specific people, projects, and decisions                   │
-│  • Stores the Q&A in memory for future sessions                     │
+│  PHASE 4: SUBGRAPH — extracts the induced subgraph the agents      │
+│  actually touched. Sent to the UI so those nodes glow gold:        │
+│  "the path behind the answer"                                       │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 5: SYNTHESIZE — streams the answer token-by-token           │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 6: STORE — writes memory back to the tenant's graph and     │
+│  lists all tenant graphs to prove multigraph isolation             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Graph Algorithms as Agent Tools
+
+Researchers choose the right tool per sub-question. FalkorDB's native
+`algo.*` procedures are used when available, with pure-Cypher fallbacks:
+
+| Tool | When it's picked |
+|---|---|
+| `shortest_path(from, to)` | "How are X and Y connected?" |
+| `impact_analysis(name, depth)` | "What breaks if X goes down?" (reverse dependency traversal) |
+| `page_rank(label, limit)` | "What are the most critical projects/systems?" |
+| `degree_centrality(label, limit)` | "Who is the most connected person?" |
+| `community_detection(label)` | "Which areas are tightly coupled?" |
+| `bottleneck_finder(label, limit)` | "Where are the single points of failure?" |
+
+### Per-Tenant Memory Isolation (multigraph topology)
+
+FalkorDB holds thousands of isolated graphs in **one instance** — no
+per-user database deployment:
+
+```
+company            ← shared knowledge graph (read by every agent)
+memory_alice       ← Alice's episodic/semantic/procedural memory
+memory_bob         ← Bob's — completely isolated, same instance
+```
+
+### MCP Interface
+
+Cortex exposes itself as MCP tools, so any MCP client (Claude Desktop,
+OpenCode, Cursor) can drive the agent:
+
+```bash
+bun run mcp     # stdio transport
+```
+
+Tools: `cortex_ask`, `cortex_query`, `cortex_algorithm`, `cortex_algorithms`,
+`cortex_memory`, `cortex_tenants`, `cortex_forget`.
+
+Or call the HTTP bridge: `POST /api/mcp { "tool": "cortex_list_tools" }`.
 
 ### Knowledge Graph Schema
 
@@ -320,28 +339,35 @@ Seeds FalkorDB with the company knowledge graph.
 cortex/
 ├── app/
 │   ├── api/
-│   │   ├── chat/route.ts      # Multi-agent chat endpoint
+│   │   ├── chat/route.ts      # SSE streaming agent endpoint
 │   │   ├── graph/route.ts     # Graph data for visualization
+│   │   ├── mcp/route.ts       # HTTP tool bridge (MCP-compatible)
 │   │   └── seed/route.ts      # Seed FalkorDB with company data
-│   ├── page.tsx               # Main UI (chat + graph + reasoning)
+│   ├── page.tsx               # Main UI (streaming chat + graph + trace)
 │   ├── layout.tsx             # Root layout
 │   └── globals.css            # Tailwind v4 theme
 ├── components/
-│   ├── Chat.tsx               # Chat interface with suggested questions
-│   ├── GraphView.tsx          # Force-directed graph visualization
-│   ├── ReasoningTrace.tsx     # Expandable agent reasoning display
+│   ├── Chat.tsx               # Streaming chat with live agent phases
+│   ├── GraphView.tsx          # Force graph + answer-path highlighting
+│   ├── ReasoningTrace.tsx     # Expandable reasoning display
 │   └── Header.tsx             # Top bar with seed button
 ├── lib/
 │   ├── agent/
-│   │   ├── index.ts           # Agent orchestrator (main pipeline)
+│   │   ├── index.ts           # Streaming pipeline (AsyncGenerator) + events
 │   │   ├── planner.ts         # Planning agent (decomposition)
-│   │   ├── researcher.ts      # Research agent (Cypher gen + execution)
-│   │   ├── synthesizer.ts     # Answer synthesis agent
-│   │   └── memory.ts          # Memory recall/storage (3 types)
-│   ├── falkordb.ts            # FalkorDB client singleton
-│   ├── seed-data.ts           # Rich company dataset (12 people, 8 projects, 13 systems, 12 docs, 8 decisions)
+│   │   ├── researcher.ts      # Research agent (tool dispatch + Cypher + retry)
+│   │   ├── synthesizer.ts     # Non-streaming synthesis (used by MCP)
+│   │   ├── algorithms.ts      # Graph algorithms exposed as tools
+│   │   ├── subgraph.ts        # Answer-path subgraph extraction
+│   │   └── memory.ts          # Memory recall/storage (per-tenant graph)
+│   ├── falkordb.ts            # Client + multigraph tenant isolation
+│   ├── seed-data.ts           # Rich company dataset
 │   ├── cypher.ts              # Schema + example queries for LLM prompts
 │   └── types.ts               # TypeScript interfaces
+├── mcp/
+│   └── server.ts              # MCP stdio server (Claude Desktop, OpenCode)
+├── lib/__tests__/
+│   └── core.test.ts           # Bun tests (keywords, isolation, algorithms)
 ├── scripts/
 │   └── seed.ts                # Standalone seed script
 ├── docker-compose.yml         # FalkorDB container
@@ -354,23 +380,23 @@ cortex/
 ## Hackathon Track Mapping
 
 ### Track 1: Agents That Act on Connected Data
-- **Multi-hop reasoning**: Researcher agents generate Cypher that traverses 2-3+ hops (Person → Project → System → Dependency)
-- **Graph queries as tools**: Each researcher generates and executes its own Cypher
-- **Tool selection**: LLM chooses the right graph pattern based on sub-question
-- **Explainable results**: Every answer includes the exact Cypher queries and graph paths used
+- **Multi-hop reasoning**: Researchers generate Cypher that traverses 2-3+ hops (Person → Project → System → Dependency)
+- **Graph algorithms as agent tools**: `shortest_path`, `page_rank`, `degree_centrality`, `community_detection`, `impact_analysis`, `bottleneck_finder` — the LLM picks the tool per sub-question
+- **Tool selection through MCP**: full MCP stdio server + HTTP bridge at `/api/mcp`
+- **Explainable results**: every answer shows the exact Cypher + the induced subgraph, highlighted gold in the visualization
 
 ### Track 2: Agent Memory and Coordination
-- **Episodic memory**: Past Q&A stored as `(:Memory {type: 'episodic'})` nodes
-- **Semantic memory**: Facts extracted and stored as `(:Memory {type: 'semantic'})` nodes
-- **Procedural memory**: Successful query patterns stored as `(:Memory {type: 'procedural'})` nodes
-- **Shared state**: All agents read/write to the same FalkorDB graph
-- **Per-session isolation**: `session_id` property on memory nodes
+- **Episodic memory**: past Q&A stored as `(:Memory {type: 'episodic'})`
+- **Semantic memory**: extracted facts as `(:Memory {type: 'semantic'})`
+- **Procedural memory**: successful query patterns as `(:Memory {type: 'procedural'})`
+- **Separate memory per user or tenant**: FalkorDB multigraph — `memory_{tenantId}` graphs isolated per tenant, same instance, no extra deployment
+- **High-concurrency reads/writes**: researchers run in parallel; memory reads happen before planning
 
 ### Track 3: Company Brain
-- **Unified knowledge**: People, teams, projects, docs, decisions, systems, technologies — all in one graph
-- **Who owns what**: `WORKS_ON`, `AUTHORED`, `MADE`, `PART_OF` relationships
-- **Decision tracing**: `AFFECTS` and `MADE` relationships connect decisions to people and projects
-- **Current knowledge**: Status properties on projects, systems, and decisions
+- **Unified knowledge**: people, teams, projects, docs, decisions, systems, technologies in one graph
+- **Who owns what / who knows what**: `WORKS_ON`, `AUTHORED`, `MADE`, `PART_OF`
+- **Tracing decisions back to source**: `AFFECTS` + `MADE` connect decisions to people and projects
+- **Answers with clear sources**: reasoning trace lists every query and evidence row
 
 ---
 
