@@ -20,7 +20,7 @@ import {
 } from "../lib/seed-data";
 
 async function seed() {
-  const graph = getGraph();
+  const graph = await getGraph();
   console.log("Clearing existing data...");
   await graph.query("MATCH (n) DETACH DELETE n");
 

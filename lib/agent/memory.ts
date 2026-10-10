@@ -7,7 +7,7 @@ export async function recallMemories(
   sessionId: string
 ): Promise<MemoryEntry[]> {
   try {
-    const graph = getGraph();
+    const graph = await getGraph();
     // Extract keywords from the question for matching
     const keywords = extractKeywords(question);
 
@@ -88,7 +88,7 @@ export async function storeEpisodicMemory(
   answer: string
 ): Promise<void> {
   try {
-    const graph = getGraph();
+    const graph = await getGraph();
     const memoryId = nanoid();
     const timestamp = new Date().toISOString();
     const content = `Q: ${question}\nA: ${answer.substring(0, 500)}`;
@@ -110,7 +110,7 @@ export async function storeSemanticMemory(
   fact: string
 ): Promise<void> {
   try {
-    const graph = getGraph();
+    const graph = await getGraph();
     const memoryId = nanoid();
     const timestamp = new Date().toISOString();
 
@@ -131,7 +131,7 @@ export async function storeProceduralMemory(
   pattern: string
 ): Promise<void> {
   try {
-    const graph = getGraph();
+    const graph = await getGraph();
     const memoryId = nanoid();
     const timestamp = new Date().toISOString();
 

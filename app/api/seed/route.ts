@@ -22,7 +22,7 @@ import {
 
 export async function POST() {
   try {
-    const graph = getGraph();
+    const graph = await getGraph();
 
     // Clear existing data
     await graph.query("MATCH (n) DETACH DELETE n");

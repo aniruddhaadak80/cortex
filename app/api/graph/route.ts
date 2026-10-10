@@ -3,7 +3,7 @@ import { getGraph } from "@/lib/falkordb";
 
 export async function GET() {
   try {
-    const graph = getGraph();
+    const graph = await getGraph();
 
     // Get all nodes with their labels and key properties
     const nodesResult = await graph.query(`

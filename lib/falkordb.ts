@@ -1,33 +1,48 @@
 import { FalkorDB } from "falkordb";
 
-let client: FalkorDB | null = null;
+let clientPromise: Promise<FalkorDB> | null = null;
 
-export function getFalkorClient(): FalkorDB {
-  if (!client) {
-    const password = process.env.FALKORDB_PASSWORD
-      ? `:${process.env.FALKORDB_PASSWORD}`
-      : "";
-    client = new FalkorDB(
-      `redis://${password}@${process.env.FALKORDB_HOST || "localhost"}:${process.env.FALKORDB_PORT || "6379"}`
-    );
+/**
+ * Returns a cached FalkorDB client connection.
+ * Uses `FalkorDB.connect()` — the official async factory — so the
+ * connection is only established once per server process.
+ */
+function connectFalkorDB(): Promise<FalkorDB> {
+  if (!clientPromise) {
+    const options: Record<string, string | number | undefined> = {
+      host: process.env.FALKORDB_HOST || "localhost",
+      port: parseInt(process.env.FALKORDB_PORT || "6379", 10),
+    };
+    if (process.env.FALKORDB_PASSWORD) {
+      options.password = process.env.FALKORDB_PASSWORD;
+    }
+    if (process.env.FALKORDB_USERNAME) {
+      options.username = process.env.FALKORDB_USERNAME;
+    }
+
+    clientPromise = FalkorDB.connect(options as any);
+
+    // Allow a retry if the first connection attempt fails
+    clientPromise.catch(() => {
+      clientPromise = null;
+    });
   }
-  return client;
+  return clientPromise;
 }
 
-export function getGraph() {
-  return getFalkorClient().selectGraph(
-    process.env.FALKORDB_GRAPH || "company"
-  );
+export async function getGraph() {
+  const client = await connectFalkorDB();
+  return client.selectGraph(process.env.FALKORDB_GRAPH || "company");
 }
 
 export async function runCypher(
   query: string,
   params?: Record<string, string | number>
-): Promise<any[]> {
-  const graph = getGraph();
+): Promise<Record<string, any>[]> {
+  const graph = await getGraph();
   try {
     const result = await graph.query(query, { params });
-    return result.data ?? [];
+    return (result.data ?? []) as Record<string, any>[];
   } catch (err) {
     console.error("[FalkorDB] Query failed:", query, err);
     throw err;
