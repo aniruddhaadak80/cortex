@@ -2,6 +2,8 @@
 
 > Give your AI agents real context. A multi-agent system where FalkorDB is the knowledge graph that shapes every answer.
 
+**Live demo:** https://cortex-psi-coral.vercel.app
+
 Built for [Graph Hacks: Context for AI Agents](https://www.wemakedevs.org/hackathons/falkordb) — a WeMakeDevs × FalkorDB hackathon.
 
 ---
@@ -236,17 +238,20 @@ curl -X POST http://localhost:3000/api/seed
 
 ### Vercel
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new)
+Live at **https://cortex-psi-coral.vercel.app**
 
-Environment variables for Vercel:
+Environment variables to set in the Vercel project (Settings → Environment Variables):
 
 | Variable | Description |
 |---|---|
-| `FALKORDB_HOST` | FalkorDB host (use FalkorDB Cloud or Railway/Render) |
-| `FALKORDB_PORT` | FalkorDB port (default: 6379) |
+| `FALKORDB_HOST` | FalkorDB host — use [FalkorDB Cloud](https://falkordb.com) or a Railway/Render instance |
+| `FALKORDB_PORT` | FalkorDB port (default: `6379`) |
 | `FALKORDB_PASSWORD` | FalkorDB password |
+| `FALKORDB_GRAPH` | Graph name (default: `company`) |
 | `OPENAI_API_KEY` | Your OpenAI API key |
-| `OPENAI_MODEL` | Model to use (default: gpt-4o) |
+| `OPENAI_MODEL` | Model to use (default: `gpt-4o`) |
+
+Set them for the **Production** environment, then trigger a redeploy. Without `FALKORDB_*` set, the UI loads and the graph is empty; `/api/chat` returns a clear `503` telling you FalkorDB isn't reachable.
 
 For production FalkorDB, use [FalkorDB Cloud](https://falkordb.com) or deploy on [Railway](https://railway.app) / [Render](https://render.com).
 
