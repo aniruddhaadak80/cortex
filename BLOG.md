@@ -1,7 +1,7 @@
 ---
-title: "I Built an AI Company Brain That Thinks in Graphs — here's the architecture"
+title: "Graph Algorithms as Agent Tools: how I built an AI Company Brain on FalkorDB"
 published: false
-tags: hackathon, aiagents, falkordb, nextjs, typescript
+tags: hackathon, aiagents, falkordb, nextjs, typescript, mcp
 canonical_url:
 ---
 
@@ -9,7 +9,7 @@ Last week I found out about the [Graph Hacks hackathon](https://www.wemakedevs.o
 
 > Build an agent where the graph database is the context layer. Not a database you query on the side — the thing that *shapes* what the agent does.
 
-So I built [Cortex](https://github.com/aniruddhaadak80/cortex). It's a multi-agent system that answers questions about a company by reasoning over a knowledge graph, remembers what it learned last session, and shows you the exact Cypher it ran to get there.
+So I built [Cortex](https://github.com/aniruddhaadak80/cortex). It's a multi-agent system that answers questions about a company by reasoning over a knowledge graph, remembers what it learned between sessions, streams its reasoning as it works, and shows you the exact Cypher and subgraph behind every answer.
 
 Here's what I built, how it works, and the parts that actually matter.
 
@@ -25,66 +25,85 @@ Person → WORKS_ON → Project → USES → System
 
 That's a two-hop traversal across three entity types. A vector store can't express it without you pre-baking every possible path. A graph expresses it in one query.
 
-## The architecture: four agents, one graph
+## The architecture: six phases, streamed live
 
-Cortex runs a pipeline where every stage reads and writes the same FalkorDB graph:
+Cortex runs a pipeline where every stage reads and writes the same FalkorDB knowledge graph. And because waiting on a spinner for eight seconds feels like an eternity, every phase emits an SSE event — the UI shows the agent working in real time:
 
 ```
-User Question
-    → Memory Agent      (recall past sessions from the graph)
-    → Planner Agent     (decompose into sub-questions)
-    → Researcher Agents (parallel: generate Cypher → execute → gather evidence)
-    → Synthesizer Agent (combine evidence into an answer)
-    → Memory Agent      (store learnings back)
+Phase 1: MEMORY     → recall past sessions from the tenant's graph
+Phase 2: PLAN       → decompose the question into focused sub-queries
+Phase 3: RESEARCH   → agents run IN PARALLEL, each picking its own tool
+Phase 4: SUBGRAPH   → extract the induced subgraph the agents touched
+Phase 5: SYNTHESIZE → stream the answer token-by-token
+Phase 6: STORE      → write memory back, prove multigraph isolation
 ```
 
-The bit I'm most happy with: **memory isn't a side table.** Episodic (past Q&A), semantic (facts learned), and procedural (successful query patterns) are all just `:Memory` nodes in the same graph. Recall is a Cypher query. Storage is a Cypher write. Same database your knowledge lives in.
+Phase 3 is where things get interesting. Each researcher doesn't just generate Cypher — it picks *how* to answer. That brings me to the part I'm most proud of.
+
+## Graph algorithms as agent tools
+
+Every researcher gets a tool catalog and decides which one fits its sub-question:
+
+| Tool | When it's picked |
+|---|---|
+| `shortest_path(from, to)` | "How are X and Y connected?" |
+| `impact_analysis(name, depth)` | "What breaks if X goes down?" |
+| `page_rank(label, limit)` | "What are the most critical projects?" |
+| `degree_centrality(label, limit)` | "Who is the most connected person?" |
+| `community_detection(label)` | "Which areas are tightly coupled?" |
+| `bottleneck_finder(label, limit)` | "Where are the single points of failure?" |
+
+FalkorDB ships native `algo.*` procedures (`algo.pageRank`, `algo.WCC`), and Cortex calls them directly — but every algorithm has a pure-Cypher fallback so a missing procedure never breaks the agent. The LLM chooses; the graph executes.
+
+Ask *"what breaks if auth-service goes down?"* and one researcher triggers `impact_analysis`, which runs a reverse dependency traversal three levels deep in one round trip:
 
 ```cypher
-MATCH (m:Memory)
-WHERE m.session_id = $sessionId
-  AND (toLower(m.content) contains $kw0 OR toLower(m.content) contains $kw1)
-RETURN m.type, m.content, m.relevance
-ORDER BY m.relevance DESC
-LIMIT 5
+MATCH (target {name: $name})
+MATCH path = (target)<-[:DEPENDS_ON|USES*1..3]-(dependent)
+RETURN labels(dependent)[0] AS kind,
+       coalesce(dependent.name, dependent.title) AS affected,
+       length(path) AS distance
+ORDER BY distance ASC
 ```
 
-## A query that actually does work
+A second agent correlates who owns each affected service via `WORKS_ON`, and the synthesizer writes it all up with names attached.
 
-Here's a real one. Ask Cortex *"what breaks if auth-service goes down?"* and one of its researchers generates:
+## Memory isn't a side table
 
-```cypher
-MATCH (s:System {name: $system})<-[:DEPENDS_ON*1..3]-(dependent:System)
-RETURN dependent.name, dependent.status
+Episodic (past Q&A), semantic (extracted facts), and procedural (successful query patterns) are all just `:Memory` nodes — but here's the twist: they don't live in the shared knowledge graph. They live in **per-tenant graphs** via FalkorDB's multigraph topology.
+
+```
+company          ← shared knowledge graph (read by every agent)
+memory_alice     ← Alice's memories, isolated
+memory_bob       ← Bob's memories, isolated
 ```
 
-The variable-length traversal `*1..3` walks the whole dependency chain — three levels deep — in one round trip. Then a second agent correlates who owns each affected service via `WORKS_ON`, and the synthesizer writes it up with names attached.
+One FalkorDB instance. Thousands of isolated graphs. No per-user database deployment. That's the "separate memory per user or tenant" requirement solved with a graph name instead of infrastructure.
 
-That's the "acts on connected data" track in one example: multi-hop reasoning, graph algorithms as tools, explainable results.
+## Showing the path behind the answer
 
-## The UI shows its work
+After the researchers finish, Cortex extracts the *induced subgraph* — the actual nodes and edges those queries touched — and sends it to the frontend. The visualization lights those nodes up in gold. You're not looking at a generic company graph; you're looking at the specific path that produced the answer.
 
-Judges (and users, honestly) can't trust a black box. So the right panel shows:
+## It's also an MCP server
 
-- every sub-query the planner produced and whether it succeeded
-- the exact Cypher each researcher ran
-- the raw rows returned
-- what memory was recalled, and its relevance score
+Cortex doesn't just live in a browser. It exposes itself as MCP tools (`cortex_ask`, `cortex_query`, `cortex_algorithm`, `cortex_memory`, `cortex_tenants`, `cortex_forget`) so any MCP client — Claude Desktop, OpenCode, Cursor — can drive the agent:
 
-That trace is also what made debugging this thing tractable — when the LLM generates bad Cypher, you see the failure immediately.
+```bash
+bun run mcp   # stdio transport
+```
+
+There's also an HTTP bridge at `POST /api/mcp { "tool": "cortex_list_tools" }` for quick testing.
 
 ## Stack
 
-Next.js 15 + React 19 + TypeScript strict, FalkorDB for the graph, Vercel AI SDK for the model calls, react-force-graph-2d to visualize the actual graph. Bun for everything else. Runs locally with one `docker compose up -d`.
+Next.js 15 + React 19 + TypeScript strict. FalkorDB for everything — graph, memory, algorithm execution. Vercel AI SDK for the model calls (streaming synthesizer via `streamText`). react-force-graph-2d for the visualization. Bun for tests (`bun test`, 10 passing) and the MCP server. Runs locally with one `docker compose up -d`.
 
 ## What I'd do next
 
-Three things, if I keep going:
-
 1. **GraphRAG hybrid retrieval** — combine embedding similarity with graph structure, so the planner can start from a fuzzy entity match instead of exact names.
-2. **Write-back from the agent loop** — let the agent *add* nodes as it learns, not just read. Right now only memory writes go back in.
-3. **Per-tenant isolation** — FalkorDB's multigraph topology means each tenant gets its own graph in one instance. Cortex has `session_id` but not real graph-level isolation yet.
+2. **Agent write-back** — let the agent *add* knowledge nodes as it discovers them, not just memory.
+3. **Community-aware planning** — run `community_detection` first and hand each researcher the subgraph of its community, cutting token cost on large graphs.
 
-The source is [on GitHub](https://github.com/aniruddhaadak80/cortex), MIT licensed. If you're in the hackathon, feel free to steal the planner/researcher pattern — that split is where most of the leverage is.
+The source is [on GitHub](https://github.com/aniruddhaadak80/cortex), MIT licensed. If you're in the hackathon, feel free to steal the planner/researcher split — that's where most of the leverage is. And the algorithm-tool dispatch pattern generalizes to any graph database with procedure calls.
 
 Questions welcome in the comments, or in the [FalkorDB Discord](https://discord.com/invite/Y2mMT9VdMy).
