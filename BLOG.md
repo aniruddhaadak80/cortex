@@ -94,6 +94,29 @@ bun run mcp   # stdio transport
 
 There's also an HTTP bridge at `POST /api/mcp { "tool": "cortex_list_tools" }` for quick testing.
 
+## The graph learns as you talk
+
+Here's the part that surprised me during the build. After every answer, a
+seventh phase — **Learn** — extracts the *new structural facts* the
+research uncovered and merges them back into the knowledge graph:
+
+```
+(:Engineer {name: 'X'})-[:OWNS]->(:Service {name: 'auth-service', learned: true, source: 'agent'})
+```
+
+So the Company Brain genuinely grows with every conversation. Ask a good
+question, and next time the graph knows something it didn't before —
+with provenance stamped on every node it creates.
+
+Which meant I had to take safety seriously. Every LLM-generated Cypher
+query passes through a guardrail before it touches FalkorDB: string
+literals and comments are stripped first (so `created_at` or a string
+containing "DELETE" can't produce false alarms), then destructive clauses
+— `CREATE`, `MERGE`, `SET`, `DELETE`, `DROP` — are rejected outright.
+Semicolon-smuggling is blocked. Researchers may only read; writes happen
+through trusted, whitelisted code paths. It's ~80 lines and it's the
+first thing I'd add to any text-to-Cypher agent.
+
 ## Stack
 
 Next.js 15 + React 19 + TypeScript strict. FalkorDB for everything — graph, memory, algorithm execution. Vercel AI SDK for the model calls (streaming synthesizer via `streamText`). react-force-graph-2d for the visualization. Bun for tests (`bun test`, 10 passing) and the MCP server. Runs locally with one `docker compose up -d`.

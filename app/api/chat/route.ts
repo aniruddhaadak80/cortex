@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
-import { runAgentStream } from "@/lib/agent";
+import { runAgentStream, type ChatTurn } from "@/lib/agent";
 import { isFalkorDBAvailable } from "@/lib/falkordb";
 
 export const maxDuration = 120;
 
 export async function POST(request: NextRequest) {
-  let body: { message?: string; sessionId?: string; tenant?: string };
+  let body: { message?: string; sessionId?: string; tenant?: string; history?: ChatTurn[] };
   try {
     body = await request.json();
   } catch {
@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const { message, sessionId, tenant } = body;
+  const { message, sessionId, tenant, history } = body;
   if (!message || typeof message !== "string") {
     return new Response(JSON.stringify({ error: "message is required" }), {
       status: 400,
@@ -36,6 +36,18 @@ export async function POST(request: NextRequest) {
   // Tenant isolation: memory is scoped per tenant (multigraph topology)
   const tenantId = tenant || sessionId || "default";
 
+  // Multi-turn: only accept well-formed turns, cap at the last 6
+  const safeHistory: ChatTurn[] = Array.isArray(history)
+    ? history
+        .filter(
+          (t) =>
+            t &&
+            (t.role === "user" || t.role === "assistant") &&
+            typeof t.content === "string"
+        )
+        .slice(-6)
+    : [];
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -47,7 +59,7 @@ export async function POST(request: NextRequest) {
       };
 
       try {
-        for await (const event of runAgentStream(message, tenantId)) {
+        for await (const event of runAgentStream(message, tenantId, safeHistory)) {
           send(event.type, event);
         }
       } catch (err: any) {

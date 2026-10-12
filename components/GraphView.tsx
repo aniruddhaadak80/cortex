@@ -21,6 +21,7 @@ interface GraphEdge {
 interface GraphViewProps {
   graphKey: number;
   highlight?: { nodes: any[]; edges: any[] };
+  onNodeSelect?: (name: string | null) => void;
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -34,7 +35,7 @@ const TYPE_COLORS: Record<string, string> = {
   Memory: "#84cc16",
 };
 
-export function GraphView({ graphKey, highlight }: GraphViewProps) {
+export function GraphView({ graphKey, highlight, onNodeSelect }: GraphViewProps) {
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] }>({
     nodes: [],
     edges: [],
@@ -130,11 +131,12 @@ export function GraphView({ graphKey, highlight }: GraphViewProps) {
         linkDirectionalParticles={2}
         linkDirectionalParticleSpeed={0.005}
         onNodeHover={(n: any) => setHoveredNode(n || null)}
+        onNodeClick={(n: any) => onNodeSelect?.(String(n.label || ""))}
         width={dimensions.width}
         height={dimensions.height}
       />
     );
-  }, [graphData, highlightLabels]);
+  }, [graphData, highlightLabels, onNodeSelect]);
 
   return (
     <div className="relative h-full w-full">

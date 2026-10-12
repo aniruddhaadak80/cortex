@@ -3,6 +3,7 @@ import { runCypher, isFalkorDBAvailable, listTenantGraphs } from "@/lib/falkordb
 import { ALGORITHM_CATALOG, runAlgorithm } from "@/lib/agent/algorithms";
 import { runAgent } from "@/lib/agent";
 import { memoryStats } from "@/lib/agent/memory";
+import { assertReadOnlyCypher } from "@/lib/cypher-guard";
 
 /**
  * MCP-style HTTP bridge.
@@ -86,6 +87,8 @@ export async function POST(request: NextRequest) {
         if (!args.cypher) {
           return NextResponse.json({ error: "cypher is required" }, { status: 400 });
         }
+        // External input — enforce read-only before touching the graph.
+        assertReadOnlyCypher(String(args.cypher));
         const rows = await runCypher(
           String(args.cypher),
           (args.params as Record<string, string | number>) || undefined

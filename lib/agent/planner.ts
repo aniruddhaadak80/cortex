@@ -3,6 +3,7 @@ import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { GRAPH_SCHEMA, EXAMPLE_QUERIES } from "@/lib/cypher";
 import type { MemoryEntry } from "@/lib/types";
+import type { ChatTurn } from "@/lib/agent";
 
 const planSchema = z.object({
   decomposed: z.string().describe("Breakdown of the question into parts"),
@@ -16,10 +17,16 @@ const planSchema = z.object({
 
 export async function planResearch(
   question: string,
-  memories: MemoryEntry[]
+  memories: MemoryEntry[],
+  history: ChatTurn[] = []
 ) {
   const memoryContext = memories
     .map((m) => `[${m.type}] ${m.content}`)
+    .join("\n");
+
+  const historyBlock = history
+    .slice(-4)
+    .map((t) => `${t.role === "user" ? "Human" : "Cortex"}: ${t.content}`)
     .join("\n");
 
   const { object: plan } = await generateObject({
@@ -35,6 +42,9 @@ ${EXAMPLE_QUERIES}
 
 ## Memory Context (from past sessions)
 ${memoryContext || "No prior memories found."}
+
+## Conversation So Far
+${historyBlock || "This is the start of the conversation."}
 
 ## User Question
 "${question}"

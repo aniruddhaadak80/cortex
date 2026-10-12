@@ -17,6 +17,7 @@ import { runCypher, listTenantGraphs } from "../lib/falkordb";
 import { runAgent } from "../lib/agent";
 import { runAlgorithm, ALGORITHM_CATALOG } from "../lib/agent/algorithms";
 import { memoryStats, forgetTenant } from "../lib/agent/memory";
+import { assertReadOnlyCypher } from "../lib/cypher-guard";
 
 const server = new McpServer({ name: "cortex", version: "1.0.0" });
 
@@ -56,6 +57,7 @@ server.tool(
   "Run raw Cypher against the shared company knowledge graph (Person, Project, Document, Decision, System, Team, Technology).",
   { cypher: z.string(), params: z.record(z.any()).optional() },
   async ({ cypher, params }) => {
+    assertReadOnlyCypher(cypher);
     const rows = await runCypher(cypher, params as any);
     return {
       content: [{ type: "text", text: JSON.stringify(rows.slice(0, 100), null, 2) }],

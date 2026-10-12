@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, AlertCircle, Loader2, Brain, Network, Zap } from "lucide-react";
-import type { AgentResponse, SubQuery, MemoryEntry } from "@/lib/types";
+import { Send, Bot, AlertCircle, Loader2, Brain, Network, Zap, Sparkles } from "lucide-react";
+import type { AgentResponse, SubQuery, MemoryEntry, LearnedFact } from "@/lib/types";
 
 export interface LivePhase {
   phase: string;
@@ -13,6 +13,7 @@ export interface LivePhase {
 interface ChatProps {
   onSubgraph: (nodes: any[], edges: any[]) => void;
   onResponse?: (r: AgentResponse) => void;
+  tenant: string;
 }
 
 const PHASE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
@@ -21,6 +22,7 @@ const PHASE_LABELS: Record<string, { label: string; icon: React.ReactNode }> = {
   research: { label: "Researchers querying graph", icon: <Zap className="h-3 w-3" /> },
   subgraph: { label: "Extracting answer path", icon: <Network className="h-3 w-3" /> },
   synthesize: { label: "Synthesizing answer", icon: <Brain className="h-3 w-3" /> },
+  learn: { label: "Learning new facts", icon: <Sparkles className="h-3 w-3" /> },
   store: { label: "Storing memory", icon: <Brain className="h-3 w-3" /> },
 };
 
@@ -43,9 +45,10 @@ interface Msg {
   answer?: string;
   response?: AgentResponse;
   error?: string;
+  learned?: LearnedFact[];
 }
 
-export function Chat({ onSubgraph, onResponse }: ChatProps) {
+export function Chat({ onSubgraph, onResponse, tenant }: ChatProps) {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -75,12 +78,24 @@ export function Chat({ onSubgraph, onResponse }: ChatProps) {
       );
 
     try {
+      // Multi-turn: send the last 4 prior exchanges so follow-ups resolve
+      const history = messages
+        .filter((m) => !m.error)
+        .slice(-4)
+        .map((m) => ({
+          role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+          content: m.role === "user" ? (m.content ?? "") : (m.answer ?? ""),
+        }))
+        .filter((t) => t.content.length > 0);
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: question,
           sessionId: new URLSearchParams(location.search).get("t") || "demo",
+          tenant,
+          history,
         }),
       });
 
@@ -134,6 +149,9 @@ export function Chat({ onSubgraph, onResponse }: ChatProps) {
           }
           case "subgraph":
             if (data.nodes?.length) onSubgraph(data.nodes, data.edges);
+            break;
+          case "writeback":
+            if (data.learned?.length) patch({ learned: data.learned });
             break;
           case "answer_chunk":
             answer += data.chunk;
@@ -252,6 +270,22 @@ export function Chat({ onSubgraph, onResponse }: ChatProps) {
                         [&_pre]:rounded-lg [&_pre]:bg-bg [&_pre]:p-3 [&_pre]:overflow-x-auto [&_pre]:text-xs"
                       dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.answer) }}
                     />
+                    {msg.learned && msg.learned.length > 0 && (
+                      <div className="mt-3 rounded-lg border border-warning/20 bg-warning/5 p-3">
+                        <p className="flex items-center gap-1.5 text-xs font-medium text-warning">
+                          <Sparkles className="h-3 w-3" />
+                          Cortex learned {msg.learned.length} new fact{msg.learned.length > 1 ? "s" : ""} and merged them into the graph
+                        </p>
+                        <div className="mt-1.5 space-y-1">
+                          {msg.learned.map((l, i) => (
+                            <p key={i} className="font-mono text-[10px] text-text-muted">
+                              ({l.from})&#8202;-&#8209;[{l.relation}]&#8202;-&#8209;&gt; ({l.to})
+                              {l.createdNode && <span className="ml-1 text-warning">+node</span>}
+                            </p>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {msg.response && (
                       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-xs text-text-muted">
                         <span>{(msg.response.processingTimeMs / 1000).toFixed(1)}s</span>

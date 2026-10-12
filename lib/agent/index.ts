@@ -7,12 +7,18 @@ import {
   storeEpisodicMemory,
   storeSemanticMemory,
   storeProceduralMemory,
-  extractKeywords,
 } from "./memory";
 import { extractSubgraphForAnswer, findPathBetween } from "./subgraph";
+import { extractDiscoveries, applyDiscoveries, type AppliedDiscovery } from "./writeback";
 import { listTenantGraphs } from "@/lib/falkordb";
 import type { AgentResponse, AgentPlan, SubQuery, MemoryEntry } from "@/lib/types";
 import { nanoid } from "nanoid";
+
+/** One prior exchange, oldest first. Powers follow-up questions. */
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
 
 /** Events emitted while the pipeline runs — consumed as SSE by the UI. */
 export type AgentEvent =
@@ -24,6 +30,7 @@ export type AgentEvent =
   | { type: "research_done"; subQuery: SubQuery }
   | { type: "answer_chunk"; chunk: string }
   | { type: "subgraph"; nodes: any[]; edges: any[]; truncated: boolean }
+  | { type: "writeback"; learned: { from: string; relation: string; to: string; createdNode: boolean }[] }
   | { type: "tenants"; graphs: string[] }
   | { type: "done"; response: AgentResponse }
   | { type: "error"; message: string };
@@ -34,18 +41,20 @@ export type AgentPhase =
   | "research"
   | "subgraph"
   | "synthesize"
+  | "learn"
   | "store";
 
 /**
  * Streaming agent pipeline.
  *
- * Memory → Plan → Research (parallel) → Subgraph → Synthesize → Store.
- * Every step yields an event so the UI can show live reasoning instead
- * of a spinner.
+ * Memory → Plan → Research (parallel) → Subgraph → Synthesize → Learn
+ * (write-back) → Store. Every step yields an event so the UI shows live
+ * reasoning instead of a spinner.
  */
 export async function* runAgentStream(
   question: string,
-  tenantId: string
+  tenantId: string,
+  history: ChatTurn[] = []
 ): AsyncGenerator<AgentEvent> {
   const startTime = Date.now();
 
@@ -58,7 +67,7 @@ export async function* runAgentStream(
 
     // ── Phase 2: Plan ──
     yield { type: "phase", phase: "plan", status: "start" };
-    const plan = await planResearch(question, memories);
+    const plan = await planResearch(question, memories, history);
     const subQueries: SubQuery[] = plan.subQueries.map((sq) => ({
       id: nanoid(),
       question: sq.question,
@@ -94,7 +103,6 @@ export async function* runAgentStream(
       return { sq: result, events };
     });
 
-    // Emit researcher events as they arrive (not in submission order)
     const results: SubQuery[] = [];
     const batches = await Promise.all(pending);
     for (const batch of batches) {
@@ -129,14 +137,45 @@ export async function* runAgentStream(
     // ── Phase 5: Synthesize (streamed) ──
     yield { type: "phase", phase: "synthesize", status: "start" };
     let answer = "";
-    const synthStream = streamAnswer(question, results, memories);
+    const synthStream = streamAnswer(question, results, memories, history);
     for await (const chunk of synthStream) {
       answer += chunk;
       yield { type: "answer_chunk", chunk };
     }
     yield { type: "phase", phase: "synthesize", status: "done" };
 
-    // ── Phase 6: Store memories + show multigraph isolation ──
+    // ── Phase 6: Learn — write new structural facts back to the graph ──
+    yield { type: "phase", phase: "learn", status: "start" };
+    let learned: AppliedDiscovery[] = [];
+    try {
+      const evidenceBlob = results
+        .filter((r) => r.status === "done")
+        .map((r) => `${r.question}\n${r.evidence || ""}`)
+        .join("\n\n");
+      const discoveries = await extractDiscoveries(question, evidenceBlob);
+      if (discoveries.length > 0) {
+        learned = await applyDiscoveries(discoveries, tenantId);
+      }
+    } catch (err) {
+      console.error("[Agent] Write-back failed (non-fatal):", err);
+    }
+    yield {
+      type: "writeback",
+      learned: learned.map((l) => ({
+        from: l.from,
+        relation: l.relation,
+        to: l.to,
+        createdNode: l.createdNode,
+      })),
+    };
+    yield {
+      type: "phase",
+      phase: "learn",
+      status: "done",
+      detail: learned.length > 0 ? `${learned.length} new facts merged` : "nothing new",
+    };
+
+    // ── Phase 7: Store memories + show multigraph isolation ──
     yield { type: "phase", phase: "store", status: "start" };
     await storeEpisodicMemory(tenantId, question, answer);
     for (const fact of extractFacts(answer, results).slice(0, 3)) {
@@ -159,6 +198,12 @@ export async function* runAgentStream(
       cypherQueries: results.filter((r) => r.cypherQuery).map((r) => r.cypherQuery!),
       graphPaths: [],
       processingTimeMs: Date.now() - startTime,
+      learned: learned.map((l) => ({
+        from: l.from,
+        relation: l.relation,
+        to: l.to,
+        createdNode: l.createdNode,
+      })),
     };
     yield { type: "done", response };
   } catch (err: any) {
@@ -170,7 +215,8 @@ export async function* runAgentStream(
 async function* streamAnswer(
   question: string,
   results: SubQuery[],
-  memories: MemoryEntry[]
+  memories: MemoryEntry[],
+  history: ChatTurn[]
 ): AsyncGenerator<string> {
   const evidenceBlocks = results
     .filter((sq) => sq.status === "done")
@@ -184,6 +230,10 @@ async function* streamAnswer(
 
   const memoryContext = memories.map((m) => `[${m.type}] ${m.content}`).join("\n");
   const failed = results.filter((r) => r.status === "failed");
+  const historyBlock = history
+    .slice(-4)
+    .map((t) => `${t.role === "user" ? "Human" : "Cortex"}: ${t.content}`)
+    .join("\n");
 
   const { textStream } = streamText({
     model: openai(process.env.OPENAI_MODEL || "gpt-4o"),
@@ -191,6 +241,9 @@ async function* streamAnswer(
 
 ## Original Question
 "${question}"
+
+## Conversation So Far
+${historyBlock || "This is the start of the conversation."}
 
 ## Memory Context
 ${memoryContext || "No prior memories."}
@@ -202,12 +255,13 @@ ${failed.length ? `## Failed Research\n${failed.map((f) => `- ${f.question}: ${f
 
 ## Instructions
 1. Answer directly and comprehensively
-2. Reference specific people, projects, documents, decisions by name
-3. Show the connections that led to the answer
-4. Acknowledge evidence gaps honestly
-5. Markdown with headers, bullets, **bold** for key terms
-6. End with a "Reasoning Path" section showing how you got there
-7. 200-400 words`,
+2. If the question is a follow-up ("what about X?", "and them?"), resolve it using the conversation above
+3. Reference specific people, projects, documents, decisions by name
+4. Show the connections that led to the answer
+5. Acknowledge evidence gaps honestly
+6. Markdown with headers, bullets, **bold** for key terms
+7. End with a "Reasoning Path" section showing how you got there
+8. 200-400 words`,
     temperature: 0.4,
   });
 
@@ -223,10 +277,11 @@ function extractFacts(answer: string, results: SubQuery[]): string[] {
 /** Non-streaming wrapper for the MCP server and tests. */
 export async function runAgent(
   question: string,
-  tenantId: string
+  tenantId: string,
+  history: ChatTurn[] = []
 ): Promise<AgentResponse> {
   let response: AgentResponse | null = null;
-  for await (const event of runAgentStream(question, tenantId)) {
+  for await (const event of runAgentStream(question, tenantId, history)) {
     if (event.type === "done") response = event.response;
   }
   if (!response) throw new Error("Agent produced no response");

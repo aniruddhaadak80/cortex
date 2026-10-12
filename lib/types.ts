@@ -76,12 +76,21 @@ export interface MemoryEntry {
   timestamp: string;
 }
 
+export interface LearnedFact {
+  from: string;
+  relation: string;
+  to: string;
+  createdNode: boolean;
+}
+
 export interface AgentResponse {
   answer: string;
   plan: AgentPlan;
   cypherQueries: string[];
   graphPaths: GraphPath[];
   processingTimeMs: number;
+  /** Facts the agent merged back into the graph this run. */
+  learned?: LearnedFact[];
 }
 
 export interface GraphPath {

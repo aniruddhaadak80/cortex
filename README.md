@@ -32,6 +32,7 @@ Every step yields an SSE event so the UI shows live reasoning — no spinners.
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        USER QUESTION                                │
+│            (+ prior turns — follow-ups resolve properly)             │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -50,6 +51,7 @@ Every step yields an SSE event so the UI shows live reasoning — no spinners.
 │  Each agent picks a TOOL:                                           │
 │    • Raw Cypher against the shared `company` knowledge graph        │
 │    • A graph algorithm (see below)                                  │
+│  Every generated query passes a READ-ONLY guardrail first           │
 │  Auto-repairs failed queries with one LLM retry                    │
 └───────────────────────────────┬─────────────────────────────────────┘
                                 ▼
@@ -64,7 +66,13 @@ Every step yields an SSE event so the UI shows live reasoning — no spinners.
 └───────────────────────────────┬─────────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│  PHASE 6: STORE — writes memory back to the tenant's graph and     │
+│  PHASE 6: LEARN — extracts NEW structural facts from the research  │
+│  and MERGEs them back into the knowledge graph with provenance     │
+│  (`learned: true, source: 'agent'`). The brain grows every chat.   │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  PHASE 7: STORE — writes memory back to the tenant's graph and     │
 │  lists all tenant graphs to prove multigraph isolation             │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -107,6 +115,50 @@ Tools: `cortex_ask`, `cortex_query`, `cortex_algorithm`, `cortex_algorithms`,
 `cortex_memory`, `cortex_tenants`, `cortex_forget`.
 
 Or call the HTTP bridge: `POST /api/mcp { "tool": "cortex_list_tools" }`.
+
+### Agent Write-Back (the brain grows)
+
+After every answer, a Learning step extracts NEW structural facts the
+research uncovered and MERGEs them into the shared graph with provenance:
+
+```
+(:Project {name: 'X', learned: true, source: 'agent', learnedBy: 'tenant-a'})
+```
+
+Relationship types and node labels are whitelisted (`WORKS_ON`, `OWNS`,
+`DEPENDS_ON`, …) — nothing the model emits can become executable syntax.
+The UI shows a "✨ Cortex learned N new facts" card with each merged edge,
+and new nodes get a sparkle badge in the entity panel.
+
+### Safety Guardrail
+
+All LLM-generated and externally-supplied Cypher passes through
+`lib/cypher-guard.ts` before touching FalkorDB:
+
+- string literals, comments and backtick identifiers are stripped first
+  (no false positives on `created_at` or strings containing "DELETE")
+- destructive clauses (`CREATE`, `MERGE`, `SET`, `DELETE`, `DETACH`,
+  `DROP`, …) are rejected — researchers may only read
+- multi-statement smuggling via `;` is rejected
+- queries must start with a read clause and stay under 2000 chars
+
+Writes only happen through trusted, server-authored code paths (seeding,
+memory, whitelisted write-back).
+
+### UI Features
+
+- **Live agent trace** — every phase streams in as it happens, with
+  sub-query status and which tool each researcher picked
+- **Answer-path highlighting** — nodes the queries touched glow gold
+- **Entity panel** — click any node: properties, owners, dependents,
+  related decisions and documents, with sparkle badges on agent-learned
+  facts
+- **Graph insights tab** — live degree centrality, PageRank and
+  bottleneck detection computed by the same algorithm tools the agents use
+- **Tenant switcher** — flip tenants in the header; each gets an isolated
+  `memory_{tenantId}` graph in the same FalkorDB instance
+- **Multi-turn** — the last 4 turns ride along with each request, so
+  "what about the other one?" resolves correctly
 
 ### Knowledge Graph Schema
 
@@ -286,27 +338,28 @@ docker compose up -d
 
 ### POST `/api/chat`
 
-Send a question to the agent.
+Streams the agent pipeline as **Server-Sent Events**. Request:
 
 ```json
 {
   "message": "Who has worked on authentication?",
-  "sessionId": "session-123"
+  "sessionId": "session-123",
+  "tenant": "acme-corp",
+  "history": [{ "role": "user", "content": "prior question" }]
 }
 ```
 
-Response:
+Events: `phase`, `memories`, `plan`, `research_start`, `research_update`,
+`research_done`, `subgraph`, `answer_chunk`, `writeback`, `tenants`,
+`done`, `error`. The `done` event carries the full `AgentResponse`:
+
 ```json
 {
   "answer": "Marcus Johnson and Lisa Zhang have worked on authentication...",
-  "plan": {
-    "decomposed": "Decomposed into 3 sub-queries...",
-    "subQueries": [...],
-    "memoryContext": [...]
-  },
+  "plan": { "decomposed": "...", "subQueries": [...], "memoryContext": [...] },
   "cypherQueries": ["MATCH (p:Person)-[:WORKS_ON]->..."],
-  "graphPaths": [...],
-  "processingTimeMs": 3200
+  "processingTimeMs": 3200,
+  "learned": [{ "from": "...", "relation": "OWNS", "to": "...", "createdNode": true }]
 }
 ```
 
@@ -314,9 +367,29 @@ Response:
 
 Returns all nodes and edges for visualization.
 
+### GET `/api/entity?name=<name>`
+
+Entity detail: properties, degree, outgoing/incoming relationships,
+owners, related decisions and documents.
+
+### GET `/api/insights`
+
+Live graph analytics: node counts by label, degree centrality, PageRank,
+bottleneck detection (with native-vs-fallback algorithm provenance).
+
+### GET `/api/health`
+
+Diagnostic: FalkorDB reachability, graph list (multigraph isolation at a
+glance), knowledge-graph node count.
+
 ### POST `/api/seed`
 
 Seeds FalkorDB with the company knowledge graph.
+
+### POST `/api/mcp`
+
+HTTP tool bridge (`cortex_list_tools`, `cortex_ask`, `cortex_query`,
+`cortex_algorithm`, …). `cortex_query` is read-only enforced.
 
 ---
 
@@ -340,26 +413,32 @@ cortex/
 ├── app/
 │   ├── api/
 │   │   ├── chat/route.ts      # SSE streaming agent endpoint
+│   │   ├── entity/route.ts    # Entity detail (owners, deps, decisions)
 │   │   ├── graph/route.ts     # Graph data for visualization
+│   │   ├── health/route.ts    # Diagnostic (DB reachability, graph list)
+│   │   ├── insights/route.ts  # Live algorithm analytics
 │   │   ├── mcp/route.ts       # HTTP tool bridge (MCP-compatible)
 │   │   └── seed/route.ts      # Seed FalkorDB with company data
 │   ├── page.tsx               # Main UI (streaming chat + graph + trace)
 │   ├── layout.tsx             # Root layout
 │   └── globals.css            # Tailwind v4 theme
 ├── components/
-│   ├── Chat.tsx               # Streaming chat with live agent phases
+│   ├── Chat.tsx               # Streaming chat (tenant, history, learned facts)
+│   ├── EntityPanel.tsx        # Click-node entity detail overlay
 │   ├── GraphView.tsx          # Force graph + answer-path highlighting
+│   ├── InsightsPanel.tsx      # Live algorithm analytics tabs
 │   ├── ReasoningTrace.tsx     # Expandable reasoning display
-│   └── Header.tsx             # Top bar with seed button
+│   └── Header.tsx             # Top bar: seed + tenant switcher
 ├── lib/
 │   ├── agent/
 │   │   ├── index.ts           # Streaming pipeline (AsyncGenerator) + events
-│   │   ├── planner.ts         # Planning agent (decomposition)
-│   │   ├── researcher.ts      # Research agent (tool dispatch + Cypher + retry)
-│   │   ├── synthesizer.ts     # Non-streaming synthesis (used by MCP)
+│   │   ├── planner.ts         # Planning agent (decomposition, multi-turn)
+│   │   ├── researcher.ts      # Research agent (tool dispatch + guarded Cypher + retry)
 │   │   ├── algorithms.ts      # Graph algorithms exposed as tools
 │   │   ├── subgraph.ts        # Answer-path subgraph extraction
+│   │   ├── writeback.ts       # Agent write-back (whitelisted MERGE with provenance)
 │   │   └── memory.ts          # Memory recall/storage (per-tenant graph)
+│   ├── cypher-guard.ts        # Read-only guardrail for LLM/external Cypher
 │   ├── falkordb.ts            # Client + multigraph tenant isolation
 │   ├── seed-data.ts           # Rich company dataset
 │   ├── cypher.ts              # Schema + example queries for LLM prompts

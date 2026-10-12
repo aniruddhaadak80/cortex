@@ -3,6 +3,7 @@ import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 import { runCypher } from "@/lib/falkordb";
 import { GRAPH_SCHEMA, EXAMPLE_QUERIES } from "@/lib/cypher";
+import { assertReadOnlyCypher } from "@/lib/cypher-guard";
 import { runAlgorithm, describeAlgorithmsForPrompt } from "./algorithms";
 import type { AlgorithmName } from "./algorithms";
 import type { SubQuery } from "@/lib/types";
@@ -103,6 +104,9 @@ Return the tool choice, its parameters, and brief reasoning.`,
         cypher: research.cypherQuery,
       });
       try {
+        // Safety: researchers may only read. Anything mutating is rejected
+        // before it reaches FalkorDB (see lib/cypher-guard.ts).
+        assertReadOnlyCypher(research.cypherQuery);
         rows = await runCypher(research.cypherQuery);
         cypherQuery = research.cypherQuery;
       } catch (err: any) {
@@ -128,6 +132,7 @@ ${EXAMPLE_QUERIES}
 Generate a corrected, conservative query (simple MATCH patterns only).`,
             temperature: 0.1,
           });
+          assertReadOnlyCypher(fix.cypherQuery);
           rows = await runCypher(fix.cypherQuery);
           cypherQuery = fix.cypherQuery;
           error = undefined;
