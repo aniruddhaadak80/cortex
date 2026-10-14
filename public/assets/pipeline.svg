@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="640" viewBox="0 0 980 640" font-family="'Segoe UI', system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0b0f1a"/>
+      <stop offset="100%" stop-color="#0f1420"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="980" height="640" rx="16" fill="url(#bg2)"/>
+  <text x="490" y="42" text-anchor="middle" font-size="24" font-weight="700" fill="#f9fafb">Cortex &#8212; Streaming Multi-Agent Pipeline</text>
+  <text x="490" y="66" text-anchor="middle" font-size="13" fill="#9ca3af">every phase emits an SSE event &#183; UI shows live reasoning, no spinners</text>
+
+  <!-- Phase 1: Memory -->
+  <g>
+    <rect x="180" y="88" width="620" height="58" rx="10" fill="#111827" stroke="#6366f1" stroke-width="1.6"/>
+    <circle cx="206" cy="117" r="7" fill="#6366f1"/>
+    <text x="226" y="112" font-size="15" font-weight="700" fill="#c7d2fe">1 &#183; MEMORY</text>
+    <text x="226" y="132" font-size="12.5" fill="#9ca3af">recall episodic / semantic / procedural memory from the tenant's isolated graph</text>
+    <text x="782" y="121" font-size="11" fill="#6366f1" text-anchor="end" font-weight="600">memory_{tenant}</text>
+  </g>
+
+  <line x1="490" y1="146" x2="490" y2="172" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Phase 2: Plan -->
+  <g>
+    <rect x="240" y="176" width="500" height="52" rx="10" fill="#111827" stroke="#8b5cf6" stroke-width="1.6"/>
+    <circle cx="266" cy="202" r="7" fill="#8b5cf6"/>
+    <text x="286" y="199" font-size="15" font-weight="700" fill="#ddd6fe">2 &#183; PLAN</text>
+    <text x="286" y="217" font-size="12.5" fill="#9ca3af">decompose the question into focused sub-queries</text>
+  </g>
+
+  <line x1="490" y1="228" x2="490" y2="252" stroke="#4b5563" stroke-width="2"/>
+  <line x1="270" y1="252" x2="710" y2="252" stroke="#4b5563" stroke-width="2"/>
+  <line x1="270" y1="252" x2="270" y2="276" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="490" y1="252" x2="490" y2="276" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="710" y1="252" x2="710" y2="276" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Phase 3: Parallel researchers -->
+  <g>
+    <rect x="60" y="280" width="860" height="104" rx="10" fill="#0d1524" stroke="#06b6d4" stroke-width="1.8" filter="url(#soft)"/>
+    <circle cx="86" cy="304" r="7" fill="#06b6d4"/>
+    <text x="106" y="309" font-size="15" font-weight="700" fill="#a5f3fc">3 &#183; RESEARCH &#8212; agents run in parallel, each picks its tool</text>
+
+    <rect x="90" y="322" width="250" height="46" rx="8" fill="#111827" stroke="#1f2937"/>
+    <text x="215" y="342" text-anchor="middle" font-size="12.5" font-weight="600" fill="#e5e7eb">Researcher A</text>
+    <text x="215" y="359" text-anchor="middle" font-size="11" fill="#6b7280">raw Cypher &#183; read-only guardrail</text>
+
+    <rect x="365" y="322" width="250" height="46" rx="8" fill="#111827" stroke="#1f2937"/>
+    <text x="490" y="342" text-anchor="middle" font-size="12.5" font-weight="600" fill="#e5e7eb">Researcher B</text>
+    <text x="490" y="359" text-anchor="middle" font-size="11" fill="#6b7280">graph algorithm (PageRank / SSSP&#8230;)</text>
+
+    <rect x="640" y="322" width="250" height="46" rx="8" fill="#111827" stroke="#1f2937"/>
+    <text x="765" y="342" text-anchor="middle" font-size="12.5" font-weight="600" fill="#e5e7eb">Researcher C &#8230; N</text>
+    <text x="765" y="359" text-anchor="middle" font-size="11" fill="#6b7280">auto-repair retry on bad Cypher</text>
+  </g>
+
+  <line x1="490" y1="384" x2="490" y2="408" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Phase 4 + 5 side by side -->
+  <g>
+    <rect x="90" y="412" width="390" height="64" rx="10" fill="#111827" stroke="#f59e0b" stroke-width="1.6"/>
+    <circle cx="116" cy="437" r="7" fill="#f59e0b"/>
+    <text x="136" y="434" font-size="14.5" font-weight="700" fill="#fde68a">4 &#183; SUBGRAPH</text>
+    <text x="136" y="453" font-size="12" fill="#9ca3af">induced subgraph of the answer path</text>
+    <text x="136" y="468" font-size="11" fill="#6b7280">highlighted gold in the visualization</text>
+  </g>
+  <g>
+    <rect x="500" y="412" width="390" height="64" rx="10" fill="#111827" stroke="#22c55e" stroke-width="1.6"/>
+    <circle cx="526" cy="437" r="7" fill="#22c55e"/>
+    <text x="546" y="434" font-size="14.5" font-weight="700" fill="#bbf7d0">5 &#183; SYNTHESIZE</text>
+    <text x="546" y="453" font-size="12" fill="#9ca3af">answer streams token-by-token</text>
+    <text x="546" y="468" font-size="11" fill="#6b7280">multi-turn context + recalled memory</text>
+  </g>
+
+  <line x1="490" y1="476" x2="490" y2="500" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Phase 6: Learn -->
+  <g>
+    <rect x="150" y="504" width="680" height="56" rx="10" fill="#111827" stroke="#eab308" stroke-width="1.8"/>
+    <circle cx="176" cy="532" r="7" fill="#eab308"/>
+    <text x="196" y="527" font-size="14.5" font-weight="700" fill="#fef08a">6 &#183; LEARN &#8212; write-back</text>
+    <text x="196" y="546" font-size="12" fill="#9ca3af">new structural facts MERGEd into the graph &#183; whitelisted relations &#183; provenance: learned:true, source:agent</text>
+  </g>
+
+  <line x1="490" y1="560" x2="490" y2="580" stroke="#4b5563" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Phase 7: Store -->
+  <g>
+    <rect x="210" y="584" width="560" height="42" rx="10" fill="#111827" stroke="#84cc16" stroke-width="1.6"/>
+    <circle cx="236" cy="605" r="7" fill="#84cc16"/>
+    <text x="256" y="610" font-size="14" font-weight="700" fill="#d9f99d">7 &#183; STORE &#8212; memory write-back + multigraph isolation proof</text>
+  </g>
+</svg>

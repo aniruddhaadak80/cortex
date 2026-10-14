@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="220" viewBox="0 0 880 220" font-family="'Segoe UI', system-ui, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b0f1a"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#06b6d4"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="880" height="220" rx="18" fill="url(#bg)"/>
+  <rect x="1" y="1" width="878" height="218" rx="17" fill="none" stroke="#1f2937" stroke-width="2"/>
+
+  <!-- Graph glyph: nodes + edges forming a brain-ish cluster -->
+  <g filter="url(#glow)" stroke-linecap="round">
+    <line x1="96" y1="70" x2="150" y2="46" stroke="#6366f1" stroke-width="2.5" opacity="0.85"/>
+    <line x1="96" y1="70" x2="60"  y2="112" stroke="#6366f1" stroke-width="2.5" opacity="0.85"/>
+    <line x1="150" y1="46" x2="170" y2="100" stroke="#06b6d4" stroke-width="2.5" opacity="0.85"/>
+    <line x1="60" y1="112" x2="104" y2="150" stroke="#06b6d4" stroke-width="2.5" opacity="0.85"/>
+    <line x1="104" y1="150" x2="170" y2="100" stroke="#6366f1" stroke-width="2.5" opacity="0.85"/>
+    <line x1="96" y1="70" x2="104" y2="150" stroke="#6366f1" stroke-width="2" opacity="0.45"/>
+    <line x1="150" y1="46" x2="60" y2="112" stroke="#06b6d4" stroke-width="2" opacity="0.45"/>
+
+    <circle cx="96"  cy="70"  r="11" fill="#6366f1"/>
+    <circle cx="150" cy="46"  r="8"  fill="#06b6d4"/>
+    <circle cx="60"  cy="112" r="8"  fill="#22c55e"/>
+    <circle cx="170" cy="100" r="9"  fill="#f59e0b"/>
+    <circle cx="104" cy="150" r="10" fill="#ef4444"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="230" y="106" font-size="58" font-weight="800" fill="#f9fafb" letter-spacing="-1">Cortex</text>
+  <text x="232" y="140" font-size="19" fill="#9ca3af" letter-spacing="0.5">AI Company Brain &#183; multi-agent reasoning over FalkorDB</text>
+  <text x="232" y="172" font-size="14" fill="#6366f1" font-weight="600" letter-spacing="2">GRAPH HACKS 2026 &#8226; CONTEXT FOR AI AGENTS</text>
+
+  <!-- Accent bar -->
+  <rect x="230" y="114" width="180" height="3" rx="1.5" fill="url(#accent)"/>
+</svg>

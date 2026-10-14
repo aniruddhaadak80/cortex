@@ -1,10 +1,14 @@
 # Cortex — AI Company Brain
 
+![Cortex](public/assets/logo.svg)
+
 > Give your AI agents real context. A multi-agent system where FalkorDB is the knowledge graph that shapes every answer.
 
-**Live demo:** https://cortex-psi-coral.vercel.app
+**Live demo:** https://cortex-psi-coral.vercel.app · **CI:** ![CI](https://github.com/aniruddhaadak80/cortex/actions/workflows/ci.yml/badge.svg)
 
 Built for [Graph Hacks: Context for AI Agents](https://www.wemakedevs.org/hackathons/falkordb) — a WeMakeDevs × FalkorDB hackathon.
+
+![Pipeline architecture](public/assets/pipeline.svg)
 
 ---
 
@@ -161,6 +165,8 @@ memory, whitelisted write-back).
   "what about the other one?" resolves correctly
 
 ### Knowledge Graph Schema
+
+![Knowledge graph schema](public/assets/schema.svg)
 
 ```
 ┌──────────┐  WORKS_ON   ┌──────────┐  USES      ┌──────────┐
