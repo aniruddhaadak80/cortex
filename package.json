@@ -16,7 +16,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^1.1.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "ai": "^4.1.0",
+    "ai": "^7.0.166",
     "clsx": "^2.1.1",
     "falkordb": "^7.0.0",
     "lucide-react": "^0.468.0",
