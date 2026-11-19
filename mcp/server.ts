@@ -21,15 +21,30 @@ import { assertReadOnlyCypher } from "../lib/cypher-guard";
 
 const server = new McpServer({ name: "cortex", version: "1.0.0" });
 
-server.tool(
+// The SDK resolves a nested zod 3 for its own types while this app runs on the
+// patched zod 4 line. Its runtime accepts both, so keep the duplicate type
+// trees out of tsc with a narrow local view of the registration surface.
+type McpToolRegistrar = {
+  registerTool(
+    name: string,
+    config: { description: string; inputSchema: Record<string, unknown> },
+    cb: (args: any) => unknown,
+  ): void;
+};
+const tools = server as unknown as McpToolRegistrar;
+
+tools.registerTool(
   "cortex_ask",
-  "Ask Cortex a natural-language question. Runs the full multi-agent pipeline (memory → plan → parallel research → subgraph → synthesis) over the company knowledge graph and returns an explainable answer with the Cypher queries used.",
   {
-    message: z.string().describe("The question to ask"),
-    tenant: z
-      .string()
-      .optional()
-      .describe("Tenant ID for isolated memory (defaults to 'default')"),
+    description:
+      "Ask Cortex a natural-language question. Runs the full multi-agent pipeline (memory → plan → parallel research → subgraph → synthesis) over the company knowledge graph and returns an explainable answer with the Cypher queries used.",
+    inputSchema: {
+      message: z.string().describe("The question to ask"),
+      tenant: z
+        .string()
+        .optional()
+        .describe("Tenant ID for isolated memory (defaults to 'default')"),
+    },
   },
   async ({ message, tenant }) => {
     const response = await runAgent(message, tenant || "default");
@@ -52,10 +67,13 @@ server.tool(
   }
 );
 
-server.tool(
+tools.registerTool(
   "cortex_query",
-  "Run raw Cypher against the shared company knowledge graph (Person, Project, Document, Decision, System, Team, Technology).",
-  { cypher: z.string(), params: z.record(z.any()).optional() },
+  {
+    description:
+      "Run raw Cypher against the shared company knowledge graph (Person, Project, Document, Decision, System, Team, Technology).",
+    inputSchema: { cypher: z.string(), params: z.record(z.string(), z.any()).optional() },
+  },
   async ({ cypher, params }) => {
     assertReadOnlyCypher(cypher);
     const rows = await runCypher(cypher, params as any);
@@ -65,13 +83,16 @@ server.tool(
   }
 );
 
-server.tool(
+tools.registerTool(
   "cortex_algorithm",
-  "Run a graph algorithm. Available: " +
-    ALGORITHM_CATALOG.map((a) => `${a.name} (${a.params})`).join(", "),
   {
-    algorithm: z.string(),
-    params: z.record(z.any()).optional(),
+    description:
+      "Run a graph algorithm. Available: " +
+      ALGORITHM_CATALOG.map((a) => `${a.name} (${a.params})`).join(", "),
+    inputSchema: {
+      algorithm: z.string(),
+      params: z.record(z.string(), z.any()).optional(),
+    },
   },
   async ({ algorithm, params }) => {
     const result = await runAlgorithm(algorithm as any, (params as any) || {});
@@ -86,37 +107,46 @@ server.tool(
   }
 );
 
-server.tool(
+tools.registerTool(
   "cortex_algorithms",
-  "List the graph algorithms available as tools, with their params and when to use them.",
-  {},
+  {
+    description: "List the graph algorithms available as tools, with their params and when to use them.",
+    inputSchema: {},
+  },
   async () => ({
     content: [{ type: "text", text: JSON.stringify(ALGORITHM_CATALOG, null, 2) }],
   })
 );
 
-server.tool(
+tools.registerTool(
   "cortex_tenants",
-  "List every per-tenant FalkorDB graph in the instance (multigraph isolation — one graph per user/tenant, no extra deployment).",
-  {},
+  {
+    description:
+      "List every per-tenant FalkorDB graph in the instance (multigraph isolation — one graph per user/tenant, no extra deployment).",
+    inputSchema: {},
+  },
   async () => ({
     content: [{ type: "text", text: JSON.stringify(await listTenantGraphs(), null, 2) }],
   })
 );
 
-server.tool(
+tools.registerTool(
   "cortex_memory",
-  "Inspect what a tenant has remembered (episodic/semantic/procedural counts).",
-  { tenant: z.string() },
+  {
+    description: "Inspect what a tenant has remembered (episodic/semantic/procedural counts).",
+    inputSchema: { tenant: z.string() },
+  },
   async ({ tenant }) => ({
     content: [{ type: "text", text: JSON.stringify(await memoryStats(tenant), null, 2) }],
   })
 );
 
-server.tool(
+tools.registerTool(
   "cortex_forget",
-  "Delete all memory for a tenant (GDPR / reset).",
-  { tenant: z.string() },
+  {
+    description: "Delete all memory for a tenant (GDPR / reset).",
+    inputSchema: { tenant: z.string() },
+  },
   async ({ tenant }) => {
     await forgetTenant(tenant);
     return { content: [{ type: "text", text: `Cleared memory for ${tenant}` }] };

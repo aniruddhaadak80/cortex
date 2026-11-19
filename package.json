@@ -14,7 +14,7 @@
     "seed": "bun run scripts/seed.ts"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^1.1.0",
+    "@ai-sdk/openai": "^2.0.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "ai": "^5.0.52",
     "clsx": "^2.1.1",
