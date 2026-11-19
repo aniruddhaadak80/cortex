@@ -55,7 +55,7 @@ server.tool(
 server.tool(
   "cortex_query",
   "Run raw Cypher against the shared company knowledge graph (Person, Project, Document, Decision, System, Team, Technology).",
-  { cypher: z.string(), params: z.record(z.any()).optional() },
+  { cypher: z.string(), params: z.record(z.string(), z.unknown()).optional() },
   async ({ cypher, params }) => {
     assertReadOnlyCypher(cypher);
     const rows = await runCypher(cypher, params as any);
@@ -71,7 +71,7 @@ server.tool(
     ALGORITHM_CATALOG.map((a) => `${a.name} (${a.params})`).join(", "),
   {
     algorithm: z.string(),
-    params: z.record(z.any()).optional(),
+    params: z.record(z.string(), z.unknown()).optional(),
   },
   async ({ algorithm, params }) => {
     const result = await runAlgorithm(algorithm as any, (params as any) || {});
