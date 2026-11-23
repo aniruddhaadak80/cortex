@@ -18,7 +18,7 @@
     "@modelcontextprotocol/sdk": "^1.32.2",
     "ai": "^5.0.52",
     "clsx": "^2.1.1",
-    "falkordb": "^7.0.0",
+    "falkordb": "^7.0.1",
     "lucide-react": "^1.73.0",
     "nanoid": "^6.0.2",
     "next": "^16.4.6",
